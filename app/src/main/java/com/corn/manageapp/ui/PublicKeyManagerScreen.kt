@@ -154,6 +154,7 @@ fun PublicKeyManagementScreen(
                 }
                 Text(message, color = color)
             }
+            Text(message, color = color)
         }
     }
 }
