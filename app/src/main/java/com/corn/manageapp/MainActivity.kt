@@ -12,6 +12,7 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.os.Bundle
@@ -55,8 +56,8 @@ class MainActivity : ComponentActivity() {
     private var nfcAdapter: NfcAdapter? = null
     private var pendingIntent: PendingIntent? = null
 
-    /** ✅ 等待写卡的数据：name | phone | emailPrefix */
-    private var pendingWriteTriple: Triple<String, String, String>? = null
+    /** ✅ 等待写卡的数据 */
+    private var pendingWrite: PendingWrite? = null
 
     /** ✅ 写卡 / 读卡回调（通知 UI 状态） */
     private var onTagWriteCallback: ((NfcWriteResult) -> Unit)? = null
@@ -105,9 +106,9 @@ class MainActivity : ComponentActivity() {
                             AppDestinations.PEOPLE ->
                                 PeopleManagementScreen(
                                     modifier = Modifier.padding(inner),
-                                    onWriteRequest = { name, phone, emailPrefix ->
+                                    onWriteRequest = { name, phone, emailPrefix, enableCounter ->
                                         // 由 UI 触发，开始等待用户贴卡
-                                        pendingWriteTriple = Triple(name, phone, emailPrefix)
+                                        pendingWrite = PendingWrite(name, phone, emailPrefix, enableCounter)
                                         onTagWriteCallback?.invoke(
                                             NfcWriteResult.Waiting
                                         )
@@ -181,8 +182,8 @@ class MainActivity : ComponentActivity() {
         val uidHex = tag?.id?.joinToString("") { "%02X".format(it) } ?: ""
 
         // ✅ 写卡：如果有待写入信息，则对 UID 做 Ed25519 签名并生成 vCard 写入
-        pendingWriteTriple?.let { triple ->
-            val (name, phone, emailPrefix) = triple
+        pendingWrite?.let { request ->
+            val (name, phone, emailPrefix, enableCounter) = request
             val tagObj = tag
             val vcard = VCardSigner.buildSignedVCard(
                 context = this,
@@ -195,10 +196,10 @@ class MainActivity : ComponentActivity() {
             val result = when {
                 tagObj == null -> NfcWriteResult.Failure("❌ 写入失败：未识别到 NFC 卡片")
                 vcard == null -> NfcWriteResult.Failure("❌ 写入失败：请先在密钥管理中配置公私钥")
-                else -> writeNfcTag(tagObj, vcard, uidHex)
+                else -> writeNfcTag(tagObj, vcard, uidHex, enableCounter)
             }
 
-            pendingWriteTriple = null
+            pendingWrite = null
             onTagWriteCallback?.invoke(result)
             return
         }
@@ -215,7 +216,15 @@ class MainActivity : ComponentActivity() {
                     msg?.records?.forEach { rec ->
                         sb.append(rec.toDecodedText())
                     }
-                    onTagReadCallback?.invoke(NfcReadResult(uidHex = uidHex, vcard = sb.toString()))
+                    val (counter, tagType) = readNtagCounter(t)
+                    onTagReadCallback?.invoke(
+                        NfcReadResult(
+                            uidHex = uidHex,
+                            vcard = sb.toString(),
+                            counter = counter,
+                            tagType = tagType
+                        )
+                    )
                 } catch (_: Exception) {
                     // ignore
                 }
@@ -223,7 +232,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun writeNfcTag(tag: Tag, data: String, uidHex: String): NfcWriteResult {
+    private fun writeNfcTag(tag: Tag, data: String, uidHex: String, enableCounter: Boolean): NfcWriteResult {
         return try {
             val ndef = Ndef.get(tag)
             val msg = NdefMessage(
@@ -234,7 +243,8 @@ class MainActivity : ComponentActivity() {
                 return if (ndef.isWritable) {
                     ndef.writeNdefMessage(msg)
                     ndef.close()
-                    NfcWriteResult.Success(uidHex)
+                    val (counterConfigured, tagType) = configureNtagCounter(tag, enableCounter)
+                    NfcWriteResult.Success(uidHex, counterConfigured, tagType)
                 } else {
                     ndef.close()
                     NfcWriteResult.Failure("❌ 写入失败：卡片为只读")
@@ -245,7 +255,8 @@ class MainActivity : ComponentActivity() {
                 return if (formatable != null) {
                     formatable.format(msg)
                     formatable.close()
-                    NfcWriteResult.Success(uidHex)
+                    val (counterConfigured, tagType) = configureNtagCounter(tag, enableCounter)
+                    NfcWriteResult.Success(uidHex, counterConfigured, tagType)
                 } else {
                     NfcWriteResult.Failure("❌ 写入失败：不支持 NDEF")
                 }
@@ -253,6 +264,74 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             NfcWriteResult.Failure("❌ 写入失败：${e.message ?: "未知错误"}")
         }
+    }
+
+    private fun configureNtagCounter(tag: Tag, enable: Boolean): Pair<Boolean?, String?> {
+        val mifare = MifareUltralight.get(tag) ?: return (if (enable) false else null) to null
+        var configured: Boolean? = if (enable) false else null
+        var label: String? = null
+        try {
+            mifare.connect()
+            label = mifare.type.toNtagLabel()
+            if (!enable) {
+                configured = null
+            } else {
+                val configPage = when (mifare.type) {
+                    MifareUltralight.TYPE_NTAG213 -> 0x29
+                    MifareUltralight.TYPE_NTAG215 -> 0x2A
+                    MifareUltralight.TYPE_NTAG216 -> 0x2A
+                    else -> null
+                }
+                if (configPage != null) {
+                    val raw = mifare.readPages(configPage)
+                    if (raw.size >= 4) {
+                        val page = raw.copyOfRange(0, 4)
+                        val current = page[0].toInt() and 0xFF
+                        val desired = current or 0x04 // 启用计数器位
+                        if (desired != current) {
+                            page[0] = desired.toByte()
+                            mifare.writePage(configPage, page)
+                        }
+                        configured = true
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            if (enable) configured = false
+        } finally {
+            try {
+                mifare.close()
+            } catch (_: Exception) {
+            }
+        }
+        return configured to label
+    }
+
+    private fun readNtagCounter(tag: Tag): Pair<Int?, String?> {
+        val mifare = MifareUltralight.get(tag) ?: return null to null
+        var counter: Int? = null
+        var label: String? = null
+        try {
+            mifare.connect()
+            val type = mifare.type
+            label = type.toNtagLabel()
+            if (type == MifareUltralight.TYPE_NTAG213 || type == MifareUltralight.TYPE_NTAG215 || type == MifareUltralight.TYPE_NTAG216) {
+                val response = mifare.transceive(byteArrayOf(0x39.toByte(), 0x02))
+                if (response.size >= 3) {
+                    counter = ((response[0].toInt() and 0xFF) shl 16) or
+                        ((response[1].toInt() and 0xFF) shl 8) or
+                        (response[2].toInt() and 0xFF)
+                }
+            }
+        } catch (_: Exception) {
+            counter = null
+        } finally {
+            try {
+                mifare.close()
+            } catch (_: Exception) {
+            }
+        }
+        return counter to label
     }
 }
 
@@ -278,13 +357,31 @@ private fun NdefRecord.toDecodedText(): String {
 /** ✅ 读取回调数据模型：UID + vCard 原文 */
 data class NfcReadResult(
     val uidHex: String,
-    val vcard: String
+    val vcard: String,
+    val counter: Int? = null,
+    val tagType: String? = null
 )
 
 sealed class NfcWriteResult {
     data object Waiting : NfcWriteResult()
-    data class Success(val uidHex: String) : NfcWriteResult()
+    data class Success(val uidHex: String, val counterConfigured: Boolean?, val tagType: String?) : NfcWriteResult()
     data class Failure(val reason: String) : NfcWriteResult()
+}
+
+private data class PendingWrite(
+    val name: String,
+    val phone: String,
+    val emailPrefix: String,
+    val enableCounter: Boolean
+)
+
+private fun Int.toNtagLabel(): String? = when (this) {
+    MifareUltralight.TYPE_NTAG213 -> "NTAG213"
+    MifareUltralight.TYPE_NTAG215 -> "NTAG215"
+    MifareUltralight.TYPE_NTAG216 -> "NTAG216"
+    MifareUltralight.TYPE_ULTRALIGHT -> "Ultralight"
+    MifareUltralight.TYPE_ULTRALIGHT_C -> "Ultralight C"
+    else -> null
 }
 
 @Composable
