@@ -46,6 +46,7 @@ fun PeopleManagementScreen(
     var lastUid by remember { mutableStateOf("") }
     var lastDoorNum by remember { mutableStateOf("") }
     var verifyOk by remember { mutableStateOf<Boolean?>(null) }
+    var hasNoteSignature by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
@@ -62,9 +63,11 @@ fun PeopleManagementScreen(
                 ?.substringAfter("NOTE:", "")
                 ?.trim()
                 ?: ""
-            verifyOk = if (noteLine.isNotEmpty()) {
+            val noteExists = noteLine.isNotEmpty()
+            hasNoteSignature = noteExists
+            verifyOk = if (noteExists) {
                 VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
-            } else null
+            } else false
             parsedLines = parseVCard(res.vcard)
             selectedTab = 1 // 自动切到“读取”
         }
@@ -76,32 +79,34 @@ fun PeopleManagementScreen(
         }
     }
 
-    Scaffold(
-        topBar = { TopAppBar(title = { Text("人员管理") }) }
-    ) { inner ->
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(inner)
-        ) {
-            TabRow(selectedTabIndex = selectedTab) {
-                tabs.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        text = { Text(title) }
-                    )
-                }
+    val containerScroll = rememberScrollState()
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(containerScroll)
+            .padding(16.dp)
+    ) {
+        Text("人员管理", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(12.dp))
+        TabRow(selectedTabIndex = selectedTab) {
+            tabs.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = { Text(title) }
+                )
             }
+        }
 
-            when (selectedTab) {
+        Spacer(Modifier.height(12.dp))
+
+        when (selectedTab) {
                 // 写入
                 0 -> {
                     Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .fillMaxWidth()
+                            .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
@@ -189,9 +194,8 @@ fun PeopleManagementScreen(
                 1 -> {
                     Column(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp)
-                            .verticalScroll(rememberScrollState()),
+                            .fillMaxWidth()
+                            .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
@@ -211,7 +215,8 @@ fun PeopleManagementScreen(
                                 false -> {
                                     Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
                                     Spacer(Modifier.width(4.dp))
-                                    Text("假", color = MaterialTheme.colorScheme.error)
+                                    val msg = if (hasNoteSignature == false) "假（缺少 NOTE 签名）" else "假"
+                                    Text(msg, color = MaterialTheme.colorScheme.error)
                                 }
                                 null -> {
                                     Text("（请刷卡）")
@@ -234,7 +239,7 @@ fun PeopleManagementScreen(
                 2 -> {
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
+                            .fillMaxWidth()
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -246,7 +251,7 @@ fun PeopleManagementScreen(
                 3 -> {
                     Box(
                         modifier = Modifier
-                            .fillMaxSize()
+                            .fillMaxWidth()
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -254,7 +259,6 @@ fun PeopleManagementScreen(
                     }
                 }
             }
-        }
     }
 }
 
