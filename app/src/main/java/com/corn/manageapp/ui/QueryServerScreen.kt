@@ -6,21 +6,24 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.*
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.imePadding
-
-// ✅ 最新 Compose 输入法 API（非常重要，否则报错）
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.platform.LocalFocusManager
 
 import com.corn.manageapp.data.DcimConfig
 import com.corn.manageapp.data.DcimConfigRepository
@@ -28,10 +31,9 @@ import com.corn.manageapp.network.DcimApi
 import com.corn.manageapp.network.HardwareItem
 import kotlinx.coroutines.launch
 
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueryServerScreen(
+    modifier: Modifier = Modifier,
     repo: DcimConfigRepository,
     onBack: () -> Unit,
     onOpenDetail: (HardwareItem) -> Unit
@@ -82,72 +84,60 @@ fun QueryServerScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("查询服务器") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("← 返回") }
-                }
+    LazyColumn(
+        modifier = modifier
+            .fillMaxSize()
+            .imePadding(),
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        item {
+            TextButton(onClick = onBack) { Text("← 返回") }
+            Text("查询服务器", style = MaterialTheme.typography.titleLarge)
+        }
+
+        item {
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it },
+                label = { Text("统一搜索（内部标签 / 物理标签 / IP 等）") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
+                        doSearch()
+                        focusManager.clearFocus()   // ✅ 自动关闭输入法
+                    }
+                ),
+                modifier = Modifier.fillMaxWidth()
             )
         }
-    ) { inner ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(inner)
-                .imePadding(),   // ✅ 解决键盘遮挡
-            contentPadding = PaddingValues(12.dp)
-        ) {
 
-            // ✅ 输入框
-            item {
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    label = { Text("统一搜索（内部标签 / 物理标签 / IP 等）") },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(
-                        onSearch = {
-                            doSearch()
-                            focusManager.clearFocus()   // ✅ 自动关闭输入法
-                        }
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
+        item {
+            Button(
+                onClick = {
+                    doSearch()
+                    focusManager.clearFocus()       // ✅ 按按钮也关闭键盘
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("查询")
             }
 
-            // ✅ 查询按钮
-            item {
-                Button(
-                    onClick = {
-                        doSearch()
-                        focusManager.clearFocus()       // ✅ 按按钮也关闭键盘
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("查询")
-                }
-
-                if (msg.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(msg)
-                }
-                Spacer(Modifier.height(12.dp))
+            if (msg.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(msg)
             }
-
-            // ✅ 列表项
-            items(result) { item ->
-                ServerRowSimple(
-                    item = item,
-                    onClick = { onOpenDetail(item) }
-                )
-                Divider()
-            }
-
-            item { Spacer(Modifier.height(20.dp)) }
         }
+
+        items(result) { item ->
+            ServerRowSimple(
+                item = item,
+                onClick = { onOpenDetail(item) }
+            )
+            Divider()
+        }
+
+        item { Spacer(Modifier.height(20.dp)) }
     }
 }
 
