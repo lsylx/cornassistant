@@ -35,7 +35,6 @@ import com.corn.manageapp.data.*
 import com.corn.manageapp.network.HardwareItem
 import com.corn.manageapp.utils.VCardSigner
 
-import java.nio.charset.Charset
 import java.util.Locale
 
 enum class AppDestinations(val label: String, val icon: ImageVector) {
@@ -45,6 +44,7 @@ enum class AppDestinations(val label: String, val icon: ImageVector) {
     SETTINGS("设置", Icons.Filled.Settings),
     INVENTORY_QUERY("查询服务器", Icons.Filled.ShoppingCart),
     SETTINGS_DCIM("DCIM配置", Icons.Filled.Settings),
+    SETTINGS_KEYS("密钥管理", Icons.Filled.Settings),
     DETAIL("设备详情", Icons.Filled.ShoppingCart)
 }
 
@@ -128,12 +128,19 @@ class MainActivity : ComponentActivity() {
                             AppDestinations.SETTINGS ->
                                 SettingsScreen(
                                     modifier = Modifier.padding(inner),
-                                    onOpenDcim = { current = AppDestinations.SETTINGS_DCIM }
+                                    onOpenDcim = { current = AppDestinations.SETTINGS_DCIM },
+                                    onOpenKeyManager = { current = AppDestinations.SETTINGS_KEYS }
                                 )
 
                             AppDestinations.SETTINGS_DCIM ->
                                 DcimSettingsScreen(
                                     repo = dcimRepo,
+                                    onBack = { current = AppDestinations.SETTINGS }
+                                )
+
+                            AppDestinations.SETTINGS_KEYS ->
+                                PublicKeyManagementScreen(
+                                    modifier = Modifier.padding(inner),
                                     onBack = { current = AppDestinations.SETTINGS }
                                 )
 
@@ -194,7 +201,7 @@ class MainActivity : ComponentActivity() {
                     ndef.close()
                     val sb = StringBuilder()
                     msg?.records?.forEach { rec ->
-                        sb.append(rec.payload.toString(Charset.forName("UTF-8")))
+                        sb.append(rec.toDecodedText())
                     }
                     onTagReadCallback?.invoke(NfcReadResult(uidHex = uidHex, vcard = sb.toString()))
                 } catch (_: Exception) {
@@ -225,6 +232,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun NdefRecord.toDecodedText(): String {
+    return try {
+        if (tnf == NdefRecord.TNF_WELL_KNOWN && type.contentEquals(NdefRecord.RTD_TEXT)) {
+            val payload = payload
+            if (payload.isEmpty()) return ""
+            val status = payload[0].toInt()
+            val isUtf16 = (status and 0x80) != 0
+            val langLength = status and 0x3F
+            val textEncoding = if (isUtf16) Charsets.UTF_16 else Charsets.UTF_8
+            val text = payload.copyOfRange(1 + langLength, payload.size)
+            String(text, textEncoding)
+        } else {
+            String(payload, Charsets.UTF_8)
+        }
+    } catch (_: Exception) {
+        ""
+    }
+}
+
 /** ✅ 读取回调数据模型：UID + vCard 原文 */
 data class NfcReadResult(
     val uidHex: String,
@@ -251,12 +277,15 @@ fun InventoryScreen(
 @Composable
 fun SettingsScreen(
     modifier: Modifier = Modifier,
-    onOpenDcim: () -> Unit
+    onOpenDcim: () -> Unit,
+    onOpenKeyManager: () -> Unit
 ) {
     Column(modifier.fillMaxSize().padding(16.dp)) {
         Text("设置", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(20.dp))
         Button(onOpenDcim, Modifier.fillMaxWidth()) { Text("DCIM 配置") }
+        Spacer(Modifier.height(12.dp))
+        Button(onOpenKeyManager, Modifier.fillMaxWidth()) { Text("公私钥管理") }
     }
 }
 
