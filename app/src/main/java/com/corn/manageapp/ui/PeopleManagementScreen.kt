@@ -11,12 +11,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.corn.manageapp.NfcReadResult
 import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.utils.VCardVerifier
+import java.util.Locale
 
 /**
  * 人员管理（离线签名版）
@@ -45,7 +46,6 @@ fun PeopleManagementScreen(
     var lastUid by remember { mutableStateOf("") }
     var lastDoorNum by remember { mutableStateOf("") }
     var verifyOk by remember { mutableStateOf<Boolean?>(null) }
-    var verifyMessage by remember { mutableStateOf<String?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
@@ -57,20 +57,14 @@ fun PeopleManagementScreen(
         onTagRead { res ->
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
-            val noteLine = res.vcard.lines()
-                .firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
+            // 从 vCard 找 NOTE 行
+            val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
                 ?.substringAfter("NOTE:", "")
                 ?.trim()
-
-            if (noteLine.isNullOrEmpty()) {
-                verifyOk = false
-                verifyMessage = "❌ vCard 缺少 NOTE 签名字段"
-            } else {
-                val ok = VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
-                verifyOk = ok
-                verifyMessage = if (ok) "✅ 签名验证通过" else "❌ 签名验证失败"
-            }
-
+                ?: ""
+            verifyOk = if (noteLine.isNotEmpty()) {
+                VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
+            } else null
             parsedLines = parseVCard(res.vcard)
             selectedTab = 1 // 自动切到“读取”
         }
@@ -99,52 +93,39 @@ fun PeopleManagementScreen(
                     )
                 }
             }
-        }
 
-        when (selectedTab) {
-            // 写入
-            0 -> {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("姓名") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = phone,
-                        onValueChange = { phone = it },
-                        label = { Text("手机号") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = emailPrefix,
-                        onValueChange = { emailPrefix = it },
-                        label = { Text("邮箱前半部分（如：john）") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Button(
-                        onClick = {
-                            val n = name.trim()
-                            val p = phone.trim()
-                            val e = emailPrefix.trim()
-                            if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
-                            // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
-                            onWriteRequest(n, p, e)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = writeStatus !is NfcWriteResult.Waiting
+            when (selectedTab) {
+                // 写入
+                0 -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
-                    }
+                        Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("姓名") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = phone,
+                            onValueChange = { phone = it },
+                            label = { Text("手机号") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = emailPrefix,
+                            onValueChange = { emailPrefix = it },
+                            label = { Text("邮箱前半部分（如：john）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
                         Button(
                             onClick = {
@@ -161,24 +142,20 @@ fun PeopleManagementScreen(
                             Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
                         }
 
-                    when (val status = writeStatus) {
-                        NfcWriteResult.Waiting -> {
-                            Text("请将卡片靠近 NFC 写入…", color = MaterialTheme.colorScheme.primary)
+                        // 预览（纯文本预览，不含 NOTE）
+                        val preview = buildString {
+                            appendLine("BEGIN:VCARD")
+                            appendLine("VERSION:3.0")
+                            appendLine("FN:${name.ifBlank { "张三" }}")
+                            appendLine("ORG:COMCORN")
+                            appendLine("EMAIL:${(emailPrefix.ifBlank { "john" })}@comcorn.cn")
+                            appendLine("TEL:${phone.ifBlank { "13800000000" }}")
+                            appendLine("NOTE:(刷卡写入时生成 UID 签名)")
+                            appendLine("END:VCARD")
                         }
-                        is NfcWriteResult.Success -> {
-                            val door = calcDoorNum10(status.uidHex)
-                            Text(
-                                buildString {
-                                    append("✅ 写卡成功 (UID: ")
-                                    append(status.uidHex)
-                                    append(')')
-                                    if (door.isNotEmpty()) {
-                                        append(" 门禁号：")
-                                        append(door)
-                                    }
-                                },
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                        Text("预览", style = MaterialTheme.typography.titleSmall)
+                        Surface(tonalElevation = 1.dp) {
+                            Text(preview, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
                         }
 
                         when (val status = writeStatus) {
@@ -207,77 +184,75 @@ fun PeopleManagementScreen(
                         }
                     }
                 }
-            }
 
-            // 读取
-            1 -> {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
+                // 读取
+                1 -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
 
-                    InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
-                    InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
+                        InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
+                        InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("验证结果：")
-                        Spacer(Modifier.width(6.dp))
-                        when (verifyOk) {
-                            true -> {
-                                Icon(
-                                    Icons.Filled.CheckCircle,
-                                    contentDescription = "真",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("真", color = MaterialTheme.colorScheme.primary)
-                            }
-                            false -> {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "假",
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text("假", color = MaterialTheme.colorScheme.error)
-                            }
-                            null -> {
-                                Text("（请刷卡）")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("验证结果：")
+                            Spacer(Modifier.width(6.dp))
+                            when (verifyOk) {
+                                true -> {
+                                    Icon(Icons.Filled.CheckCircle, contentDescription = "真", tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("真", color = MaterialTheme.colorScheme.primary)
+                                }
+                                false -> {
+                                    Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("假", color = MaterialTheme.colorScheme.error)
+                                }
+                                null -> {
+                                    Text("（请刷卡）")
+                                }
                             }
                         }
-                    }
 
-                    verifyMessage?.let {
-                        Text(
-                            it,
-                            color = if (verifyOk == true) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.error
+                        if (parsedLines.isNotEmpty()) {
+                            Divider()
+                            parsedLines.forEach {
+                                Text(it, style = MaterialTheme.typography.bodySmall)
                             }
-                        )
-                    }
-
-                    if (parsedLines.isNotEmpty()) {
-                        Divider()
-                        parsedLines.forEach {
-                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
                         }
-                    } else {
-                        Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
                     }
                 }
-            }
 
-            // 人员
-            2 -> {
-                Text("人员信息管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
-            }
+                // 人员
+                2 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("人员信息管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
 
-            // 门禁
-            3 -> {
-                Text("门禁管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                // 门禁
+                3 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("门禁管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
             }
         }
     }

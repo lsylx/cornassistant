@@ -124,7 +124,6 @@ class MainActivity : ComponentActivity() {
 
                             AppDestinations.INVENTORY_QUERY ->
                                 QueryServerScreen(
-                                    modifier = Modifier.padding(inner),
                                     repo = dcimRepo,
                                     onBack = { current = AppDestinations.INVENTORY },
                                     onOpenDetail = { item ->
