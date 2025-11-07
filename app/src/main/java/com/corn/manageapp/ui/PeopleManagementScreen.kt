@@ -82,23 +82,22 @@ fun PeopleManagementScreen(
         }
     }
 
-    val outerScroll = rememberScrollState()
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(outerScroll)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text("人员管理", style = MaterialTheme.typography.titleLarge)
-
-        TabRow(selectedTabIndex = selectedTab) {
-            tabs.forEachIndexed { index, title ->
-                Tab(
-                    selected = selectedTab == index,
-                    onClick = { selectedTab = index },
-                    text = { Text(title) }
-                )
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("人员管理") }) }
+    ) { inner ->
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(inner)
+        ) {
+            TabRow(selectedTabIndex = selectedTab) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) }
+                    )
+                }
             }
         }
 
@@ -147,21 +146,20 @@ fun PeopleManagementScreen(
                         Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
                     }
 
-                    // 预览（纯文本预览，不含 NOTE）
-                    val preview = buildString {
-                        appendLine("BEGIN:VCARD")
-                        appendLine("VERSION:3.0")
-                        appendLine("FN:${name.ifBlank { "张三" }}")
-                        appendLine("ORG:COMCORN")
-                        appendLine("EMAIL:${(emailPrefix.ifBlank { "john" })}@comcorn.cn")
-                        appendLine("TEL:${phone.ifBlank { "13800000000" }}")
-                        appendLine("NOTE:(刷卡写入时生成 UID 签名)")
-                        appendLine("END:VCARD")
-                    }
-                    Text("预览", style = MaterialTheme.typography.titleSmall)
-                    Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                        Text(preview, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
-                    }
+                        Button(
+                            onClick = {
+                                val n = name.trim()
+                                val p = phone.trim()
+                                val e = emailPrefix.trim()
+                                if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
+                                // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
+                                onWriteRequest(n, p, e)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = writeStatus !is NfcWriteResult.Waiting
+                        ) {
+                            Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
+                        }
 
                     when (val status = writeStatus) {
                         NfcWriteResult.Waiting -> {
@@ -182,10 +180,31 @@ fun PeopleManagementScreen(
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
-                        is NfcWriteResult.Failure -> {
-                            Text(status.reason, color = MaterialTheme.colorScheme.error)
+
+                        when (val status = writeStatus) {
+                            NfcWriteResult.Waiting -> {
+                                Text("请将卡片靠近 NFC 写入…", color = MaterialTheme.colorScheme.primary)
+                            }
+                            is NfcWriteResult.Success -> {
+                                val door = calcDoorNum10(status.uidHex)
+                                Text(
+                                    buildString {
+                                        append("✅ 写卡成功 (UID: ")
+                                        append(status.uidHex)
+                                        append(')')
+                                        if (door.isNotEmpty()) {
+                                            append(" 门禁号：")
+                                            append(door)
+                                        }
+                                    },
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            is NfcWriteResult.Failure -> {
+                                Text(status.reason, color = MaterialTheme.colorScheme.error)
+                            }
+                            null -> {}
                         }
-                        null -> {}
                     }
                 }
             }
