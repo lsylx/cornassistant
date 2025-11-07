@@ -1,22 +1,30 @@
 package com.corn.manageapp.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
+import androidx.compose.material3.menuAnchor
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import com.corn.manageapp.NfcReadResult
 import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.utils.VCardVerifier
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.util.Locale
 
 /**
@@ -28,11 +36,12 @@ import java.util.Locale
 @Composable
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
-    onWriteRequest: (String, String, String) -> Unit,
+    onWriteRequest: (String, String, String, Boolean) -> Unit,
     onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
     onTagRead: ((NfcReadResult) -> Unit) -> Unit
 ) {
     val ctx = LocalContext.current
+    val focusManager = LocalFocusManager.current
 
     val tabs = listOf("写入", "读取", "人员", "门禁")
     var selectedTab by rememberSaveable { mutableStateOf(0) }
@@ -41,6 +50,12 @@ fun PeopleManagementScreen(
     var name by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
     var emailPrefix by rememberSaveable { mutableStateOf("") }
+    var enableNtagCounter by rememberSaveable { mutableStateOf(true) }
+
+    // 人员列表
+    val people = remember { mutableStateListOf<PersonProfile>() }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var showDetailFor by remember { mutableStateOf<PersonProfile?>(null) }
 
     // 读取结果
     var lastUid by remember { mutableStateOf("") }
@@ -49,6 +64,8 @@ fun PeopleManagementScreen(
     var hasNoteSignature by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
+    var lastCounter by remember { mutableStateOf<Int?>(null) }
+    var lastTagType by remember { mutableStateOf<String?>(null) }
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
@@ -58,6 +75,8 @@ fun PeopleManagementScreen(
         onTagRead { res ->
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
+            lastCounter = res.nfcCounter
+            lastTagType = res.tagType
             // 从 vCard 找 NOTE 行
             val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
                 ?.substringAfter("NOTE:", "")
@@ -139,12 +158,24 @@ fun PeopleManagementScreen(
                                 val e = emailPrefix.trim()
                                 if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
                                 // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
-                                onWriteRequest(n, p, e)
+                                onWriteRequest(n, p, e, enableNtagCounter)
                             },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = writeStatus !is NfcWriteResult.Waiting
                         ) {
                             Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = enableNtagCounter,
+                                onCheckedChange = { enableNtagCounter = it }
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text("启用 NTAG NFC 计数器配置")
                         }
 
                         // 预览（纯文本预览，不含 NOTE）
@@ -177,6 +208,16 @@ fun PeopleManagementScreen(
                                         if (door.isNotEmpty()) {
                                             append(" 门禁号：")
                                             append(door)
+                                        }
+                                        if (status.counterConfigured) {
+                                            append(" 已启用计数器")
+                                            status.counterTagType?.let {
+                                                append(" [")
+                                                append(it)
+                                                append(']')
+                                            }
+                                        } else if (enableNtagCounter) {
+                                            append(" 计数器未启用")
                                         }
                                     },
                                     color = MaterialTheme.colorScheme.primary
@@ -232,18 +273,67 @@ fun PeopleManagementScreen(
                         } else {
                             Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
                         }
+
+                        InfoLine(
+                            label = "NFC 计数器",
+                            value = when {
+                                lastCounter != null -> buildString {
+                                    append(lastCounter)
+                                    lastTagType?.let {
+                                        append(" (")
+                                        append(it)
+                                        append(')')
+                                    }
+                                }
+                                lastTagType != null -> "${lastTagType}（未读取到计数值）"
+                                else -> null
+                            }
+                        )
                     }
                 }
 
                 // 人员
                 2 -> {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(12.dp),
-                        contentAlignment = Alignment.Center
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Text("人员信息管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                        if (people.isEmpty()) {
+                            Text("暂无人员，请添加", style = MaterialTheme.typography.bodyMedium)
+                        } else {
+                            people.forEach { person ->
+                                Surface(
+                                    tonalElevation = 2.dp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showDetailFor = person }
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp)
+                                    ) {
+                                        Text(person.name, style = MaterialTheme.typography.titleMedium)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text("${person.gender}｜${person.phone}", style = MaterialTheme.typography.bodyMedium)
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(person.email, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                focusManager.clearFocus()
+                                showAddDialog = true
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("添加人员")
+                        }
                     }
                 }
 
@@ -260,6 +350,31 @@ fun PeopleManagementScreen(
                 }
             }
     }
+
+    if (showAddDialog) {
+        AddPersonDialog(
+            onDismiss = { showAddDialog = false },
+            onSubmit = { profile ->
+                people.add(profile)
+                showAddDialog = false
+            }
+        )
+    }
+
+    showDetailFor?.let { person ->
+        PersonDetailDialog(
+            person = person,
+            onDismiss = { showDetailFor = null },
+            onPrefill = {
+                name = person.name
+                phone = person.phone
+                emailPrefix = person.email.substringBefore('@')
+                enableNtagCounter = true
+                selectedTab = 0
+                showDetailFor = null
+            }
+        )
+    }
 }
 
 /* ----------------- 小工具 & 解析 ----------------- */
@@ -275,6 +390,160 @@ private fun InfoLine(label: String, value: String?) {
         AssistChip(onClick = {}, label = { Text(label) })
         Spacer(Modifier.width(8.dp))
         Text(value, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+private data class PersonProfile(
+    val name: String,
+    val gender: String,
+    val idNumber: String,
+    val phone: String,
+    val email: String
+)
+
+@Composable
+private fun AddPersonDialog(
+    onDismiss: () -> Unit,
+    onSubmit: (PersonProfile) -> Unit
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var gender by rememberSaveable { mutableStateOf("男") }
+    var idNumber by rememberSaveable { mutableStateOf("") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
+    var genderExpanded by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    if (name.isBlank() || idNumber.isBlank() || phone.isBlank() || email.isBlank()) return@TextButton
+                    onSubmit(
+                        PersonProfile(
+                            name = name.trim(),
+                            gender = gender,
+                            idNumber = idNumber.trim(),
+                            phone = phone.trim(),
+                            email = email.trim()
+                        )
+                    )
+                }
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+        title = { Text("添加人员") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("姓名") },
+                    singleLine = true
+                )
+                ExposedDropdownMenuBox(
+                    expanded = genderExpanded,
+                    onExpandedChange = { genderExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = gender,
+                        onValueChange = {},
+                        label = { Text("性别") },
+                        readOnly = true,
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = genderExpanded) },
+                        modifier = Modifier.menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = genderExpanded,
+                        onDismissRequest = { genderExpanded = false }
+                    ) {
+                        listOf("男", "女").forEach { item ->
+                            DropdownMenuItem(
+                                text = { Text(item) },
+                                onClick = {
+                                    gender = item
+                                    genderExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = idNumber,
+                    onValueChange = { idNumber = it },
+                    label = { Text("身份证号") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("手机号") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("邮箱") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    singleLine = true
+                )
+            }
+        }
+    )
+}
+
+@Composable
+private fun PersonDetailDialog(
+    person: PersonProfile,
+    onDismiss: () -> Unit,
+    onPrefill: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onPrefill) { Text("填写到写卡") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+        title = { Text(person.name) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                InfoRow("性别", person.gender)
+                InfoRow("身份证号", person.idNumber)
+                InfoRow("出生日期", parseBirthFromId(person.idNumber) ?: "未知")
+                InfoRow("手机号", person.phone)
+                InfoRow("邮箱", person.email)
+            }
+        }
+    )
+}
+
+@Composable
+private fun InfoRow(label: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(value, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+private fun parseBirthFromId(id: String): String? {
+    val digits = id.filter { it.isDigit() }
+    if (digits.length < 14) return null
+    val birth = digits.substring(6, 14)
+    return try {
+        val date = LocalDate.parse(birth, DateTimeFormatter.ofPattern("yyyyMMdd"))
+        date.format(DateTimeFormatter.ISO_DATE)
+    } catch (_: DateTimeParseException) {
+        null
     }
 }
 
