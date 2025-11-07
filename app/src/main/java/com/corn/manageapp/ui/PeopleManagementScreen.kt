@@ -1,8 +1,11 @@
 package com.corn.manageapp.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -14,10 +17,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.mutableStateListOf
 import com.corn.manageapp.NfcReadResult
 import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.utils.VCardVerifier
 import java.util.Locale
+
 
 /**
  * 人员管理（离线签名版）
@@ -28,7 +33,7 @@ import java.util.Locale
 @Composable
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
-    onWriteRequest: (String, String, String) -> Unit,
+    onWriteRequest: (String, String, String, Boolean) -> Unit,
     onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
     onTagRead: ((NfcReadResult) -> Unit) -> Unit
 ) {
@@ -41,6 +46,8 @@ fun PeopleManagementScreen(
     var name by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
     var emailPrefix by rememberSaveable { mutableStateOf("") }
+    var enableCounter by rememberSaveable { mutableStateOf(true) }
+    var lastEnableCounterRequest by remember { mutableStateOf(true) }
 
     // 读取结果
     var lastUid by remember { mutableStateOf("") }
@@ -49,6 +56,14 @@ fun PeopleManagementScreen(
     var hasNoteSignature by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
+    var lastTagType by remember { mutableStateOf("") }
+    var lastCounter by remember { mutableStateOf<Int?>(null) }
+    var lastCounterEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var lastCounterSupported by remember { mutableStateOf<Boolean?>(null) }
+
+    val people = remember { mutableStateListOf<Person>() }
+    var showAddDialog by remember { mutableStateOf(false) }
+    var selectedPerson by remember { mutableStateOf<Person?>(null) }
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
@@ -58,6 +73,10 @@ fun PeopleManagementScreen(
         onTagRead { res ->
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
+            lastTagType = res.tagType.orEmpty()
+            lastCounter = res.nfcCounter
+            lastCounterEnabled = res.counterEnabled
+            lastCounterSupported = res.counterSupported
             // 从 vCard 找 NOTE 行
             val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
                 ?.substringAfter("NOTE:", "")
@@ -132,14 +151,24 @@ fun PeopleManagementScreen(
                             modifier = Modifier.fillMaxWidth()
                         )
 
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Checkbox(checked = enableCounter, onCheckedChange = { enableCounter = it })
+                            Spacer(Modifier.width(6.dp))
+                            Text("写卡时开启 NFC 计数器", style = MaterialTheme.typography.bodyMedium)
+                        }
+
                         Button(
                             onClick = {
                                 val n = name.trim()
                                 val p = phone.trim()
                                 val e = emailPrefix.trim()
                                 if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
+                                lastEnableCounterRequest = enableCounter
                                 // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
-                                onWriteRequest(n, p, e)
+                                onWriteRequest(n, p, e, enableCounter)
                             },
                             modifier = Modifier.fillMaxWidth(),
                             enabled = writeStatus !is NfcWriteResult.Waiting
@@ -169,18 +198,29 @@ fun PeopleManagementScreen(
                             }
                             is NfcWriteResult.Success -> {
                                 val door = calcDoorNum10(status.uidHex)
+                                val pieces = mutableListOf<String>()
+                                pieces += "UID: ${status.uidHex}"
+                                status.tagType?.takeIf { it.isNotBlank() }?.let { pieces += "类型：$it" }
+                                if (door.isNotEmpty()) {
+                                    pieces += "门禁号：$door"
+                                }
+                                if (status.counterSupported) {
+                                    val counterText = if (status.counterEnabled) "计数器：已启用" else "计数器：未启用"
+                                    pieces += counterText
+                                } else if (lastEnableCounterRequest) {
+                                    pieces += "计数器：不支持"
+                                }
                                 Text(
-                                    buildString {
-                                        append("✅ 写卡成功 (UID: ")
-                                        append(status.uidHex)
-                                        append(')')
-                                        if (door.isNotEmpty()) {
-                                            append(" 门禁号：")
-                                            append(door)
-                                        }
-                                    },
+                                    "✅ 写卡成功 (${pieces.joinToString(" / ")})",
                                     color = MaterialTheme.colorScheme.primary
                                 )
+                                if (status.counterSupported && !status.counterEnabled) {
+                                    Text(
+                                        "提示：请确认标签支持并已启用 NFC 计数器",
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             }
                             is NfcWriteResult.Failure -> {
                                 Text(status.reason, color = MaterialTheme.colorScheme.error)
@@ -202,6 +242,31 @@ fun PeopleManagementScreen(
 
                         InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
                         InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
+                        InfoLine("标签类型", lastTagType.takeIf { it.isNotEmpty() })
+                        when (lastCounterSupported) {
+                            true -> {
+                                val counterText = lastCounter?.toString() ?: "读取失败"
+                                InfoLine("NFC 计数器", counterText)
+                                lastCounterEnabled?.let { enabled ->
+                                    Text(
+                                        if (enabled) "计数器已启用" else "计数器未启用",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+
+                            false -> {
+                                if (lastTagType.isNotEmpty()) {
+                                    Text(
+                                        "该标签不支持 NFC 计数器",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.tertiary
+                                    )
+                                }
+                            }
+
+                            null -> {}
+                        }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("验证结果：")
@@ -237,13 +302,36 @@ fun PeopleManagementScreen(
 
                 // 人员
                 2 -> {
-                    Box(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
-                        contentAlignment = Alignment.Center
+                            .padding(12.dp)
                     ) {
-                        Text("人员信息管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                        if (people.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("暂无人员，请点击下方按钮添加", style = MaterialTheme.typography.bodyMedium)
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(people) { person ->
+                                    PersonRow(person = person, onClick = { selectedPerson = person })
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = { showAddDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text("添加人员")
+                        }
                     }
                 }
 
@@ -259,7 +347,238 @@ fun PeopleManagementScreen(
                     }
                 }
             }
+
+        if (showAddDialog) {
+            AddPersonDialog(
+                onDismiss = { showAddDialog = false },
+                onConfirm = { person ->
+                    people.add(person)
+                    showAddDialog = false
+                }
+            )
+        }
+
+        selectedPerson?.let { person ->
+            PersonDetailDialog(
+                person = person,
+                onDismiss = { selectedPerson = null },
+                onFillWrite = {
+                    name = it.name
+                    phone = it.phone
+                    emailPrefix = it.email.substringBefore('@')
+                    selectedTab = 0
+                    selectedPerson = null
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun PersonRow(person: Person, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                "${person.name} (${person.gender.label})",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text("身份证：${person.idNumber}", style = MaterialTheme.typography.bodySmall)
+            if (person.birthDate.isNotEmpty()) {
+                Text("出生日期：${person.birthDate}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text("手机号：${person.phone}", style = MaterialTheme.typography.bodySmall)
+            Text("邮箱：${person.email}", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun AddPersonDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (Person) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var idNumber by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var gender by remember { mutableStateOf<Gender?>(null) }
+
+    val birthDate = parseBirthDateFromId(idNumber)
+    val canSubmit = name.isNotBlank() && idNumber.isNotBlank() && phone.isNotBlank() && email.isNotBlank() && gender != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加人员") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("姓名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = idNumber,
+                    onValueChange = {
+                        idNumber = it
+                        if (gender == null) {
+                            deriveGenderFromId(it)?.let { derived -> gender = derived }
+                        }
+                    },
+                    label = { Text("身份证号") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = if (birthDate.isNotEmpty()) "出生日期：$birthDate" else "出生日期：自动识别失败",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text("性别", style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Gender.values().forEach { option ->
+                        FilterChip(
+                            selected = gender == option,
+                            onClick = { gender = option },
+                            label = { Text(option.label) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = { phone = it },
+                    label = { Text("手机号") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("邮箱") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val finalGender = gender ?: return@TextButton
+                    onConfirm(
+                        Person(
+                            name = name.trim(),
+                            gender = finalGender,
+                            idNumber = idNumber.trim(),
+                            birthDate = parseBirthDateFromId(idNumber.trim()),
+                            phone = phone.trim(),
+                            email = email.trim()
+                        )
+                    )
+                },
+                enabled = canSubmit
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
+}
+
+@Composable
+private fun PersonDetailDialog(
+    person: Person,
+    onDismiss: () -> Unit,
+    onFillWrite: (Person) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("人员详情") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("姓名：${person.name}", style = MaterialTheme.typography.bodyMedium)
+                Text("性别：${person.gender.label}", style = MaterialTheme.typography.bodyMedium)
+                Text("身份证号：${person.idNumber}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "出生日期：${person.birthDate.ifEmpty { "-" }}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text("手机号：${person.phone}", style = MaterialTheme.typography.bodyMedium)
+                Text("邮箱：${person.email}", style = MaterialTheme.typography.bodyMedium)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onFillWrite(person) }) { Text("填入写卡") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        }
+    )
+}
+
+private data class Person(
+    val name: String,
+    val gender: Gender,
+    val idNumber: String,
+    val birthDate: String,
+    val phone: String,
+    val email: String
+)
+
+private enum class Gender(val label: String) {
+    Male("男"),
+    Female("女")
+}
+
+private fun parseBirthDateFromId(idNumber: String): String {
+    val clean = idNumber.trim()
+    return when {
+        clean.length >= 18 -> {
+            val birth = clean.substring(6, 14)
+            if (birth.all { it.isDigit() }) {
+                val year = birth.substring(0, 4)
+                val month = birth.substring(4, 6)
+                val day = birth.substring(6, 8)
+                "$year-$month-$day"
+            } else {
+                ""
+            }
+        }
+
+        clean.length == 15 -> {
+            val birth = clean.substring(6, 12)
+            if (birth.all { it.isDigit() }) {
+                val year = "19${birth.substring(0, 2)}"
+                val month = birth.substring(2, 4)
+                val day = birth.substring(4, 6)
+                "$year-$month-$day"
+            } else {
+                ""
+            }
+        }
+
+        else -> ""
+    }
+}
+
+private fun deriveGenderFromId(idNumber: String): Gender? {
+    val clean = idNumber.trim()
+    val genderChar = when {
+        clean.length >= 17 -> clean[16]
+        clean.length == 15 -> clean[14]
+        else -> return null
+    }
+    val digit = genderChar.digitToIntOrNull() ?: return null
+    return if (digit % 2 == 0) Gender.Female else Gender.Male
 }
 
 /* ----------------- 小工具 & 解析 ----------------- */
