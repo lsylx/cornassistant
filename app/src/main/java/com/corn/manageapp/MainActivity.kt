@@ -20,6 +20,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.runtime.*
@@ -56,7 +58,8 @@ class MainActivity : ComponentActivity() {
     /** ✅ 等待写卡的数据：name | phone | emailPrefix */
     private var pendingWriteTriple: Triple<String, String, String>? = null
 
-    /** ✅ 读取完成后回调 UI（携带 uid 与 vcard） */
+    /** ✅ 写卡 / 读卡回调（通知 UI 状态） */
+    private var onTagWriteCallback: ((NfcWriteResult) -> Unit)? = null
     private var onTagReadCallback: ((NfcReadResult) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,7 +108,11 @@ class MainActivity : ComponentActivity() {
                                     onWriteRequest = { name, phone, emailPrefix ->
                                         // 由 UI 触发，开始等待用户贴卡
                                         pendingWriteTriple = Triple(name, phone, emailPrefix)
+                                        onTagWriteCallback?.invoke(
+                                            NfcWriteResult.Waiting
+                                        )
                                     },
+                                    onWriteStatus = { cb -> onTagWriteCallback = cb },
                                     onTagRead = { cb -> onTagReadCallback = cb }
                                 )
 
@@ -175,20 +182,25 @@ class MainActivity : ComponentActivity() {
 
         // ✅ 写卡：如果有待写入信息，则对 UID 做 Ed25519 签名并生成 vCard 写入
         pendingWriteTriple?.let { triple ->
-            tag?.let { t ->
-                val (name, phone, emailPrefix) = triple
-                val vcard = VCardSigner.buildSignedVCard(
-                    context = this,
-                    fullName = name,
-                    tel = phone,
-                    email = "$emailPrefix@comcorn.cn",
-                    uidHex = uidHex
-                )
-                if (vcard != null) {
-                    writeNfcTag(t, vcard)
-                }
-                pendingWriteTriple = null
+            val (name, phone, emailPrefix) = triple
+            val tagObj = tag
+            val vcard = VCardSigner.buildSignedVCard(
+                context = this,
+                fullName = name,
+                tel = phone,
+                email = "$emailPrefix@comcorn.cn",
+                uidHex = uidHex
+            )
+
+            val result = when {
+                tagObj == null -> NfcWriteResult.Failure("❌ 写入失败：未识别到 NFC 卡片")
+                vcard == null -> NfcWriteResult.Failure("❌ 写入失败：请先在密钥管理中配置公私钥")
+                else -> writeNfcTag(tagObj, vcard, uidHex)
             }
+
+            pendingWriteTriple = null
+            onTagWriteCallback?.invoke(result)
+            return
         }
 
         // ✅ 读卡：读取全部 NDEF 文本，回传给 UI（携带 UID）
@@ -211,23 +223,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun writeNfcTag(tag: Tag, data: String) {
-        try {
+    private fun writeNfcTag(tag: Tag, data: String, uidHex: String): NfcWriteResult {
+        return try {
             val ndef = Ndef.get(tag)
             val msg = NdefMessage(
                 arrayOf(NdefRecord.createTextRecord(Locale.CHINA.language, data))
             )
             if (ndef != null) {
                 ndef.connect()
-                if (ndef.isWritable) ndef.writeNdefMessage(msg)
-                ndef.close()
+                return if (ndef.isWritable) {
+                    ndef.writeNdefMessage(msg)
+                    ndef.close()
+                    NfcWriteResult.Success(uidHex)
+                } else {
+                    ndef.close()
+                    NfcWriteResult.Failure("❌ 写入失败：卡片为只读")
+                }
             } else {
                 val formatable = NdefFormatable.get(tag)
                 formatable?.connect()
-                formatable?.format(msg)
-                formatable?.close()
+                return if (formatable != null) {
+                    formatable.format(msg)
+                    formatable.close()
+                    NfcWriteResult.Success(uidHex)
+                } else {
+                    NfcWriteResult.Failure("❌ 写入失败：不支持 NDEF")
+                }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            NfcWriteResult.Failure("❌ 写入失败：${e.message ?: "未知错误"}")
         }
     }
 }
@@ -257,13 +281,23 @@ data class NfcReadResult(
     val vcard: String
 )
 
+sealed class NfcWriteResult {
+    data object Waiting : NfcWriteResult()
+    data class Success(val uidHex: String) : NfcWriteResult()
+    data class Failure(val reason: String) : NfcWriteResult()
+}
+
 @Composable
 fun InventoryScreen(
     modifier: Modifier = Modifier,
     onOpenQueryServer: () -> Unit
 ) {
+    val scrollState = rememberScrollState()
     Column(
-        modifier = modifier.fillMaxSize().padding(16.dp),
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text("机房管理", style = MaterialTheme.typography.titleLarge)
@@ -280,7 +314,13 @@ fun SettingsScreen(
     onOpenDcim: () -> Unit,
     onOpenKeyManager: () -> Unit
 ) {
-    Column(modifier.fillMaxSize().padding(16.dp)) {
+    val scrollState = rememberScrollState()
+    Column(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState)
+            .padding(16.dp)
+    ) {
         Text("设置", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(20.dp))
         Button(onOpenDcim, Modifier.fillMaxWidth()) { Text("DCIM 配置") }
@@ -291,7 +331,13 @@ fun SettingsScreen(
 
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    val scrollState = rememberScrollState()
+    Box(
+        modifier
+            .fillMaxSize()
+            .verticalScroll(scrollState),
+        contentAlignment = Alignment.Center
+    ) {
         Text("Welcome to $name!", style = MaterialTheme.typography.titleLarge)
     }
 }

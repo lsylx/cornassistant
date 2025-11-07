@@ -15,6 +15,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
 import com.corn.manageapp.NfcReadResult
+import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.utils.VCardVerifier
 import java.util.Locale
 
@@ -28,6 +29,7 @@ import java.util.Locale
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
     onWriteRequest: (String, String, String) -> Unit,
+    onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
     onTagRead: ((NfcReadResult) -> Unit) -> Unit
 ) {
     val ctx = LocalContext.current
@@ -45,9 +47,13 @@ fun PeopleManagementScreen(
     var lastDoorNum by remember { mutableStateOf("") }
     var verifyOk by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
+    var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
+        onWriteStatus { status ->
+            writeStatus = status
+        }
         onTagRead { res ->
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
@@ -61,6 +67,12 @@ fun PeopleManagementScreen(
             } else null
             parsedLines = parseVCard(res.vcard)
             selectedTab = 1 // 自动切到“读取”
+        }
+    }
+
+    LaunchedEffect(writeStatus) {
+        if (writeStatus != null) {
+            selectedTab = 0
         }
     }
 
@@ -124,8 +136,11 @@ fun PeopleManagementScreen(
                                 // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
                                 onWriteRequest(n, p, e)
                             },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text("写入 NFC") }
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = writeStatus !is NfcWriteResult.Waiting
+                        ) {
+                            Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
+                        }
 
                         // 预览（纯文本预览，不含 NOTE）
                         val preview = buildString {
@@ -141,6 +156,31 @@ fun PeopleManagementScreen(
                         Text("预览", style = MaterialTheme.typography.titleSmall)
                         Surface(tonalElevation = 1.dp) {
                             Text(preview, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
+                        }
+
+                        when (val status = writeStatus) {
+                            NfcWriteResult.Waiting -> {
+                                Text("请将卡片靠近 NFC 写入…", color = MaterialTheme.colorScheme.primary)
+                            }
+                            is NfcWriteResult.Success -> {
+                                val door = calcDoorNum10(status.uidHex)
+                                Text(
+                                    buildString {
+                                        append("✅ 写卡成功 (UID: ")
+                                        append(status.uidHex)
+                                        append(')')
+                                        if (door.isNotEmpty()) {
+                                            append(" 门禁号：")
+                                            append(door)
+                                        }
+                                    },
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                            is NfcWriteResult.Failure -> {
+                                Text(status.reason, color = MaterialTheme.colorScheme.error)
+                            }
+                            null -> {}
                         }
                     }
                 }
