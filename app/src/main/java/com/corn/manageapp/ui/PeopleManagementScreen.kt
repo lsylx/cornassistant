@@ -1,8 +1,11 @@
 package com.corn.manageapp.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -10,284 +13,251 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.compose.ui.platform.LocalContext
+import com.corn.manageapp.NfcReadResult
+import com.corn.manageapp.utils.VCardVerifier
+import java.util.Locale
 
+/**
+ * 人员管理（离线签名版）
+ * - 写入：仅收集 name/phone/emailPrefix，实际写卡在 MainActivity 中完成（使用私钥签名 UID）
+ * - 读取：收到 UID + vCard，解析 NOTE 验真伪、显示 UID 和 10位门禁卡号
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
-    onWriteRequest: (String) -> Unit,
-    onTagRead: ((String) -> Unit) -> Unit
+    onWriteRequest: (String, String, String) -> Unit,
+    onTagRead: ((NfcReadResult) -> Unit) -> Unit
 ) {
+    val ctx = LocalContext.current
+
     val tabs = listOf("写入", "读取", "人员", "门禁")
     var selectedTab by rememberSaveable { mutableStateOf(0) }
 
-    // 写入字段
+    // 写入表单
     var name by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
     var emailPrefix by rememberSaveable { mutableStateOf("") }
 
-    // 读取数据
-    var rawRead by remember { mutableStateOf("") }
-    var parsed by remember { mutableStateOf(ParsedVCard(emptyList(), false)) }
+    // 读取结果
+    var lastUid by remember { mutableStateOf("") }
+    var lastDoorNum by remember { mutableStateOf("") }
+    var verifyOk by remember { mutableStateOf<Boolean?>(null) }
+    var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    val snackHost = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-
-    // 注册读取回调
+    // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
-        onTagRead { text ->
-            rawRead = text
-            parsed = parseVCard(text)
-            selectedTab = 1
+        onTagRead { res ->
+            lastUid = res.uidHex
+            lastDoorNum = calcDoorNum10(res.uidHex)
+            // 从 vCard 找 NOTE 行
+            val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
+                ?.substringAfter("NOTE:", "")
+                ?.trim()
+                ?: ""
+            verifyOk = if (noteLine.isNotEmpty()) {
+                VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
+            } else null
+            parsedLines = parseVCard(res.vcard)
+            selectedTab = 1 // 自动切到“读取”
         }
     }
 
     Scaffold(
-        modifier = modifier,
-        topBar = { TopAppBar(title = { Text("人员管理") }) },
-        snackbarHost = { SnackbarHost(snackHost) }
-    ) { innerPadding ->
-
-        LazyColumn(
-            modifier = Modifier
+        topBar = { TopAppBar(title = { Text("人员管理") }) }
+    ) { inner ->
+        Column(
+            modifier = modifier
                 .fillMaxSize()
-                .padding(innerPadding)
-                .imePadding(),
-            contentPadding = PaddingValues(12.dp)
+                .padding(inner)
         ) {
-
-            /* ---------------- Tabs 顶部栏 ---------------- */
-            item {
-                TabRow(selectedTabIndex = selectedTab) {
-                    tabs.forEachIndexed { index, title ->
-                        Tab(
-                            selected = selectedTab == index,
-                            onClick = { selectedTab = index },
-                            text = { Text(title) }
-                        )
-                    }
+            TabRow(selectedTabIndex = selectedTab) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { Text(title) }
+                    )
                 }
-                Spacer(Modifier.height(12.dp))
             }
 
-            /* =====================================================
-             * 写入页面
-             * ===================================================== */
-            if (selectedTab == 0) {
-                item { Text("写入 vCard 到 NFC", style = MaterialTheme.typography.titleMedium) }
-
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text("姓名") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                item {
-                    OutlinedTextField(
-                        value = phone,
-                        onValueChange = { phone = it },
-                        label = { Text("手机号") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                item {
-                    OutlinedTextField(
-                        value = emailPrefix,
-                        onValueChange = { emailPrefix = it },
-                        label = { Text("邮箱前半部分（例如 john）") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                item {
-                    Spacer(Modifier.height(10.dp))
-                    Button(
-                        onClick = {
-                            if (name.isBlank() || phone.isBlank() || emailPrefix.isBlank()) {
-                                scope.launch {
-                                    snackHost.showSnackbar("请填写姓名、手机号、邮箱前半部分")
-                                }
-                                return@Button
-                            }
-
-                            val vcard = buildVCard(
-                                fullName = name,
-                                org = "COMCORN",
-                                email = "${emailPrefix}@comcorn.cn",
-                                tel = phone
-                            )
-                            onWriteRequest(vcard)
-
-                            scope.launch {
-                                snackHost.showSnackbar("请将 NFC 卡靠近设备完成写入…")
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
+            when (selectedTab) {
+                // 写入
+                0 -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("写入 NFC")
-                    }
-                }
-
-                item {
-                    Spacer(Modifier.height(16.dp))
-                    Text("预览（vCard）", style = MaterialTheme.typography.titleSmall)
-                }
-
-                item {
-                    Surface(tonalElevation = 2.dp) {
-                        Text(
-                            text = buildVCard(
-                                name.ifBlank { "张三" },
-                                "COMCORN",
-                                (emailPrefix.ifBlank { "john" }) + "@comcorn.cn",
-                                phone.ifBlank { "13800000000" }
-                            ),
-                            modifier = Modifier.padding(8.dp),
-                            fontFamily = FontFamily.Monospace
+                        Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
+                        OutlinedTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            label = { Text("姓名") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
                         )
-                    }
-                }
-            }
+                        OutlinedTextField(
+                            value = phone,
+                            onValueChange = { phone = it },
+                            label = { Text("手机号") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = emailPrefix,
+                            onValueChange = { emailPrefix = it },
+                            label = { Text("邮箱前半部分（如：john）") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
-            /* =====================================================
-             * 读取页面
-             * ===================================================== */
-            if (selectedTab == 1) {
+                        Button(
+                            onClick = {
+                                val n = name.trim()
+                                val p = phone.trim()
+                                val e = emailPrefix.trim()
+                                if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
+                                // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
+                                onWriteRequest(n, p, e)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("写入 NFC") }
 
-                item { Text("读取 vCard", style = MaterialTheme.typography.titleMedium) }
-
-                item {
-                    AssistLine(
-                        label = "公司校验（ORG 是否包含 COMCORN）",
-                        value = if (parsed.isComcorn) "真" else "假"
-                    )
-                }
-
-                if (parsed.lines.isNotEmpty()) {
-                    items(parsed.lines) { line ->
-                        Text(line, style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(6.dp))
-                    }
-                } else {
-                    item { Text("请将 NFC 卡靠近设备读取信息") }
-                }
-
-                if (rawRead.isNotEmpty()) {
-                    item {
-                        Spacer(Modifier.height(12.dp))
-                        Text("原始文本（调试）", style = MaterialTheme.typography.titleSmall)
-                    }
-                    item {
-                        Surface(tonalElevation = 2.dp) {
-                            Text(
-                                text = rawRead,
-                                modifier = Modifier.padding(8.dp),
-                                fontFamily = FontFamily.Monospace
-                            )
+                        // 预览（纯文本预览，不含 NOTE）
+                        val preview = buildString {
+                            appendLine("BEGIN:VCARD")
+                            appendLine("VERSION:3.0")
+                            appendLine("FN:${name.ifBlank { "张三" }}")
+                            appendLine("ORG:COMCORN")
+                            appendLine("EMAIL:${(emailPrefix.ifBlank { "john" })}@comcorn.cn")
+                            appendLine("TEL:${phone.ifBlank { "13800000000" }}")
+                            appendLine("NOTE:(刷卡写入时生成 UID 签名)")
+                            appendLine("END:VCARD")
+                        }
+                        Text("预览", style = MaterialTheme.typography.titleSmall)
+                        Surface(tonalElevation = 1.dp) {
+                            Text(preview, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
                         }
                     }
                 }
-            }
 
-            /* =====================================================
-             * 人员
-             * ===================================================== */
-            if (selectedTab == 2) {
-                item {
+                // 读取
+                1 -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
+
+                        InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
+                        InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("验证结果：")
+                            Spacer(Modifier.width(6.dp))
+                            when (verifyOk) {
+                                true -> {
+                                    Icon(Icons.Filled.CheckCircle, contentDescription = "真", tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("真", color = MaterialTheme.colorScheme.primary)
+                                }
+                                false -> {
+                                    Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("假", color = MaterialTheme.colorScheme.error)
+                                }
+                                null -> {
+                                    Text("（请刷卡）")
+                                }
+                            }
+                        }
+
+                        if (parsedLines.isNotEmpty()) {
+                            Divider()
+                            parsedLines.forEach {
+                                Text(it, style = MaterialTheme.typography.bodySmall)
+                            }
+                        } else {
+                            Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                // 人员
+                2 -> {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(40.dp),
+                            .fillMaxSize()
+                            .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("人员信息管理（可扩展）")
+                        Text("人员信息管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+
+                // 门禁
+                3 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("门禁管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
-
-            /* =====================================================
-             * 门禁
-             * ===================================================== */
-            if (selectedTab == 3) {
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(40.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("门禁管理（可扩展）")
-                    }
-                }
-            }
-
-            item { Spacer(Modifier.height(20.dp)) }
         }
     }
 }
 
-/* -------------------- 工具函数 -------------------- */
+/* ----------------- 小工具 & 解析 ----------------- */
 
-private fun buildVCard(fullName: String, org: String, email: String, tel: String): String =
-    """
-        BEGIN:VCARD
-        VERSION:3.0
-        FN:$fullName
-        ORG:$org
-        EMAIL:$email
-        TEL:$tel
-        END:VCARD
-    """.trimIndent().replace("\n", "\r\n")
-
-private fun parseVCard(text: String): ParsedVCard {
-    val lines = text.replace("\r\n", "\n").split("\n")
-    val list = mutableListOf<String>()
-    var isComcorn = false
-
-    for (l in lines.map { it.trim() }) {
-        when {
-            l.startsWith("FN:", true) ->
-                list.add("姓名：${l.substringAfter("FN:")}")
-
-            l.startsWith("ORG:", true) -> {
-                val org = l.substringAfter("ORG:")
-                list.add("公司：$org")
-                if (org.contains("COMCORN", true)) isComcorn = true
-            }
-
-            l.startsWith("TEL", true) ->
-                list.add("电话：${l.substringAfter(":")}")
-
-            l.startsWith("EMAIL", true) ->
-                list.add("邮箱：${l.substringAfter(":")}")
-        }
-    }
-
-    return ParsedVCard(
-        lines = list.ifEmpty { listOf("未识别到有效 vCard") },
-        isComcorn = isComcorn
-    )
-}
-
-private data class ParsedVCard(
-    val lines: List<String>,
-    val isComcorn: Boolean
-)
-
+/** 信息行（左标签右值；当值为空时不显示） */
 @Composable
-private fun AssistLine(label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun InfoLine(label: String, value: String?) {
+    if (value.isNullOrEmpty()) return
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         AssistChip(onClick = {}, label = { Text(label) })
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(Modifier.width(8.dp))
         Text(value, style = MaterialTheme.typography.titleMedium)
     }
+}
+
+/** 解析 vCard 的常见字段 */
+private fun parseVCard(vcard: String): List<String> {
+    val lines = vcard.replace("\r\n", "\n").split("\n")
+    val out = mutableListOf<String>()
+    for (raw in lines) {
+        val l = raw.trim()
+        when {
+            l.startsWith("FN:", true) -> out.add("姓名：${l.substringAfter("FN:", "")}")
+            l.startsWith("ORG:", true) -> out.add("公司：${l.substringAfter("ORG:", "")}")
+            l.startsWith("TEL", true) -> out.add("电话：${l.substringAfter(':', "")}")
+            l.startsWith("EMAIL", true) -> out.add("邮箱：${l.substringAfter(':', "")}")
+        }
+    }
+    return out
+}
+
+/**
+ * 计算“门禁卡号”：取 UID 的前 4 个字节（8个HEX字符），按大端解析成无符号整型，
+ * 再格式化为 10 位十进制，不足左侧补 0。
+ */
+private fun calcDoorNum10(uidHex: String): String {
+    val clean = uidHex.replace("[^0-9A-Fa-f]".toRegex(), "")
+    if (clean.length < 8) return ""
+    val first4 = clean.substring(0, 8)
+    val value = first4.toULong(16).toLong() // 0..0xFFFFFFFF
+    return value.toString().padStart(10, '0')
 }

@@ -15,11 +15,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.imePadding
+
+// ✅ 最新 Compose 输入法 API（非常重要，否则报错）
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.platform.LocalFocusManager
+
 import com.corn.manageapp.data.DcimConfig
 import com.corn.manageapp.data.DcimConfigRepository
 import com.corn.manageapp.network.DcimApi
 import com.corn.manageapp.network.HardwareItem
 import kotlinx.coroutines.launch
+
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,6 +42,46 @@ fun QueryServerScreen(
     var result by remember { mutableStateOf<List<HardwareItem>>(emptyList()) }
     val scope = rememberCoroutineScope()
 
+    // ✅ 控制输入法（关闭键盘必须加这个）
+    val focusManager = LocalFocusManager.current
+
+    fun doSearch() {
+        if (cfg.host.isEmpty()) {
+            msg = "请先在设置中配置 DCIM 地址/账号/密码"
+            result = emptyList()
+            return
+        }
+
+        scope.launch {
+            try {
+                val api = DcimApi.create(cfg.host)
+                val r = api.queryServers(
+                    username = cfg.username,
+                    password = cfg.password,
+                    search = "key",
+                    key = key,
+                    listpages = 50
+                )
+
+                if (r.status == "success") {
+                    result = r.listing ?: emptyList()
+                    msg = "共 ${result.size} 台"
+
+                    // ✅ 若只有 1 台，自动跳转
+                    if (result.size == 1) {
+                        onOpenDetail(result.first())
+                    }
+                } else {
+                    result = emptyList()
+                    msg = "❌ 查询失败"
+                }
+            } catch (e: Exception) {
+                result = emptyList()
+                msg = "❌ 请求异常：${e.message}"
+            }
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -44,65 +92,52 @@ fun QueryServerScreen(
             )
         }
     ) { inner ->
-        // ✅ 全部使用一个 LazyColumn，整页可滑动；加 imePadding 防止被键盘遮挡
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(inner)
-                .imePadding(),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                .imePadding(),   // ✅ 解决键盘遮挡
+            contentPadding = PaddingValues(12.dp)
         ) {
+
+            // ✅ 输入框
             item {
                 OutlinedTextField(
                     value = key,
                     onValueChange = { key = it },
                     label = { Text("统一搜索（内部标签 / 物理标签 / IP 等）") },
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(
+                        onSearch = {
+                            doSearch()
+                            focusManager.clearFocus()   // ✅ 自动关闭输入法
+                        }
+                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
             }
 
+            // ✅ 查询按钮
             item {
                 Button(
                     onClick = {
-                        if (cfg.host.isEmpty()) {
-                            msg = "请先在设置中配置 DCIM 地址/账号/密码"
-                            return@Button
-                        }
-                        scope.launch {
-                            try {
-                                val api = DcimApi.create(cfg.host)
-                                val r = api.queryServers(
-                                    username = cfg.username,
-                                    password = cfg.password,
-                                    search = "key",
-                                    key = key,
-                                    listpages = 50
-                                )
-                                if (r.status == "success") {
-                                    result = r.listing ?: emptyList()
-                                    msg = "共 ${result.size} 台"
-                                } else {
-                                    result = emptyList()
-                                    msg = "❌ 查询失败"
-                                }
-                            } catch (e: Exception) {
-                                result = emptyList()
-                                msg = "❌ 请求异常：${e.message}"
-                            }
-                        }
+                        doSearch()
+                        focusManager.clearFocus()       // ✅ 按按钮也关闭键盘
                     },
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("查询") }
+                ) {
+                    Text("查询")
+                }
 
                 if (msg.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
                     Text(msg)
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(12.dp))
             }
 
-            // ✅ 结果列表（同一个 LazyColumn 里，页面整体都能滑动）
+            // ✅ 列表项
             items(result) { item ->
                 ServerRowSimple(
                     item = item,
@@ -111,12 +146,13 @@ fun QueryServerScreen(
                 Divider()
             }
 
-            // 防止底部被系统栏/小屏裁掉的一点缓冲
-            item { Spacer(Modifier.height(12.dp)) }
+            item { Spacer(Modifier.height(20.dp)) }
         }
     }
 }
 
+
+/* ✅ 简洁列表行 + 电源状态点 */
 @Composable
 private fun ServerRowSimple(
     item: HardwareItem,
@@ -129,7 +165,7 @@ private fun ServerRowSimple(
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        StatusDot(status = item.power)
+        StatusDot(item.power)
         Spacer(Modifier.width(10.dp))
 
         Column(Modifier.weight(1f)) {
@@ -138,27 +174,30 @@ private fun ServerRowSimple(
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(Modifier.height(2.dp))
-            val line = buildString {
+
+            val sub = buildString {
                 if (!item.wltag.isNullOrEmpty()) append("物理: ${item.wltag}  ")
                 if (!item.zhuip.isNullOrEmpty()) append("IP: ${item.zhuip}  ")
                 if (!item.power.isNullOrEmpty()) append("状态: ${item.power}")
-            }.ifEmpty { "-" }
-            Text(line, style = MaterialTheme.typography.bodySmall)
+            }.ifBlank { "-" }
+
+            Text(sub, style = MaterialTheme.typography.bodySmall)
         }
-        Spacer(Modifier.width(4.dp))
     }
 }
 
-/** 电源状态颜色点：on=绿、off=红、error=橙、nonsupport/未知=灰 */
+
+/* ✅ 电源状态颜色点 */
 @Composable
 private fun StatusDot(status: String?) {
-    val color: Color = when (status?.lowercase()) {
+    val color = when (status?.lowercase()) {
         "on" -> Color(0xFF2ECC71)
         "off" -> Color(0xFFE74C3C)
         "error" -> Color(0xFFF39C12)
         "nonsupport" -> Color(0xFF95A5A6)
         else -> Color(0xFFB0B0B0)
     }
+
     Box(
         modifier = Modifier
             .size(12.dp)

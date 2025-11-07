@@ -51,6 +51,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.78.1")
+    implementation("androidx.security:security-crypto:1.1.0-alpha03")
 
     // ✅ DataStore
     implementation("androidx.datastore:datastore-preferences:1.1.1")

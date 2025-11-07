@@ -1,8 +1,8 @@
 package com.corn.manageapp.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,20 +21,21 @@ fun DeviceDetailScreen(
     item: HardwareItem,
     onBack: () -> Unit
 ) {
-    Column(
+    // ✅ 整页可滑动，适配超小屏 240×320
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .padding(12.dp)
     ) {
-        TextButton(onClick = onBack) { Text("← 返回") }
-        Text("设备详情", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(8.dp))
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-        ) {
+        item {
+            TextButton(onClick = onBack) { Text("← 返回") }
+            Text("设备详情", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(8.dp))
+        }
+
+        // ✅ 统一封装每一段 Section + 内容
+        item {
             SectionTitle("基本信息")
             Info("内部标签", item.nbtag)
             Info("物理标签", item.wltag)
@@ -45,7 +46,9 @@ fun DeviceDetailScreen(
             Info("服务器ID", item.serverid)
             Info("机房", item.house_name)
             Info("机柜", item.cname)
+        }
 
+        item {
             SectionTitle("网络信息")
             Info("主IP", item.zhuip)
             Info("子网掩码", item.subnetmask)
@@ -58,14 +61,18 @@ fun DeviceDetailScreen(
             Info("MAC", item.mac)
             Info("端口MAC", jsonArrayToInline(item.port_mac))
             Info("IP 列表", normalizeIpList(item.ip))
+        }
 
+        item {
             SectionTitle("IPMI / 电源")
             Info("IPMI 支持", item.ipmi_support)
             Info("IPMI IP", item.ipmi_ip)
             Info("IPMI 用户名", item.ipmi_name)
             Info("IPMI 密码", item.ipmi_pass)
             Info("电源信息", item.power_msg)
+        }
 
+        item {
             SectionTitle("硬件")
             Info("CPU", normalizeCpu(item.cpu))
             Info("内存", normalizeNameNumArray(item.ram))
@@ -73,7 +80,9 @@ fun DeviceDetailScreen(
             Info("PCI", normalizeNameNumArray(item.pci))
             Info("硬盘数量", item.disk_num)
             Info("硬盘容量", jsonArrayToInline(item.disk_size))
+        }
 
+        item {
             SectionTitle("系统")
             Info("OS 名称", item.osname)
             Info("OS ID", item.os_id)
@@ -82,14 +91,15 @@ fun DeviceDetailScreen(
             Info("系统密码", item.ospassword)
             Info("默认用户", item.default_user)
             Info("破解用户", item.crack_user)
+        }
 
+        item {
             SectionTitle("其它")
             Info("锁定", item.lock)
             Info("平均流量", item.average_flow)
             Info("机柜ID", item.cid)
             Info("机房ID", item.house)
             Info("合计", item.sum)
-
             Spacer(Modifier.height(20.dp))
         }
     }
@@ -105,7 +115,7 @@ private fun SectionTitle(text: String) {
     Spacer(Modifier.height(6.dp))
 }
 
-/** ✅ 只保留一个 Info，彻底避免 JVM 签名冲突 */
+/** ✅ 只保留一个 Info（避免 JVM 冲突） */
 @Composable
 private fun Info(label: String, value: String?) {
     if (!value.isNullOrEmpty() && value != "null") {
@@ -124,7 +134,6 @@ private fun combineSwitch(id: String?, name: String?, num: String?): String? {
 
 /* =========================  JSON 解析规范化  ========================= */
 
-/** IP 列表：兼容 [{"ipaddress":"x"}] 或 ["x"] */
 private fun normalizeIpList(ip: JsonElement?): String? {
     if (ip == null || ip.isJsonNull) return null
     return when {
@@ -136,12 +145,13 @@ private fun normalizeIpList(ip: JsonElement?): String? {
                 else e.asSafeString()
             }
         }
+
         ip.isJsonObject -> ip.asJsonObject["ipaddress"]?.asString
+
         else -> ip.asSafeString()
     }?.takeIf { it.isNotBlank() }
 }
 
-/** CPU：常见为对象 {"name":"xxx","num":"2"}；若为数组则取第一项 */
 private fun normalizeCpu(cpu: JsonElement?): String? {
     if (cpu == null || cpu.isJsonNull) return null
     return when {
@@ -150,11 +160,11 @@ private fun normalizeCpu(cpu: JsonElement?): String? {
             val first = cpu.asJsonArray.firstOrNull() ?: return null
             if (first.isJsonObject) nameNumOne(first.asJsonObject) else first.asSafeString()
         }
+
         else -> cpu.asSafeString()
     }
 }
 
-/** RAM/DISK/PCI：数组 [{name,num}] → "A x2； B x4" */
 private fun normalizeNameNumArray(el: JsonElement?): String? {
     if (el == null || el.isJsonNull) return null
     if (!el.isJsonArray) return el.asSafeString()
@@ -165,7 +175,6 @@ private fun normalizeNameNumArray(el: JsonElement?): String? {
     }
 }
 
-/** 端口MAC / 磁盘容量等：JsonArray → "a, b, c" */
 private fun jsonArrayToInline(el: JsonElement?): String? {
     if (el == null || el.isJsonNull) return null
     return when {
@@ -173,6 +182,7 @@ private fun jsonArrayToInline(el: JsonElement?): String? {
             val arr = el.asJsonArray
             if (arr.size() == 0) null else arr.joinToString(", ") { it.asSafeString() }
         }
+
         else -> el.asSafeString()
     }
 }
