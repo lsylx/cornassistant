@@ -1,4 +1,4 @@
-package com.example.myapplication
+package com.corn.manageapp
 
 import org.junit.Test
 
