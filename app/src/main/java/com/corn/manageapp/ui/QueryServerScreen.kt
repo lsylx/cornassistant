@@ -29,7 +29,6 @@ import com.corn.manageapp.network.HardwareItem
 import kotlinx.coroutines.launch
 
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun QueryServerScreen(
     repo: DcimConfigRepository,
@@ -82,72 +81,68 @@ fun QueryServerScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("查询服务器") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) { Text("← 返回") }
-                }
-            )
-        }
-    ) { inner ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(inner)
-                .imePadding(),   // ✅ 解决键盘遮挡
-            contentPadding = PaddingValues(12.dp)
-        ) {
-
-            // ✅ 输入框
-            item {
-                OutlinedTextField(
-                    value = key,
-                    onValueChange = { key = it },
-                    label = { Text("统一搜索（内部标签 / 物理标签 / IP 等）") },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(
-                        onSearch = {
-                            doSearch()
-                            focusManager.clearFocus()   // ✅ 自动关闭输入法
-                        }
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),   // ✅ 解决键盘遮挡
+        contentPadding = PaddingValues(12.dp)
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBack) { Text("← 返回") }
+                Spacer(Modifier.width(8.dp))
+                Text("查询服务器", style = MaterialTheme.typography.titleLarge)
             }
+            Spacer(Modifier.height(12.dp))
+        }
 
-            // ✅ 查询按钮
-            item {
-                Button(
-                    onClick = {
+        // ✅ 输入框
+        item {
+            OutlinedTextField(
+                value = key,
+                onValueChange = { key = it },
+                label = { Text("统一搜索（内部标签 / 物理标签 / IP 等）") },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(
+                    onSearch = {
                         doSearch()
-                        focusManager.clearFocus()       // ✅ 按按钮也关闭键盘
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("查询")
-                }
-
-                if (msg.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(msg)
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // ✅ 列表项
-            items(result) { item ->
-                ServerRowSimple(
-                    item = item,
-                    onClick = { onOpenDetail(item) }
-                )
-                Divider()
-            }
-
-            item { Spacer(Modifier.height(20.dp)) }
+                        focusManager.clearFocus()   // ✅ 自动关闭输入法
+                    }
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
         }
+
+        // ✅ 查询按钮
+        item {
+            Button(
+                onClick = {
+                    doSearch()
+                    focusManager.clearFocus()       // ✅ 按按钮也关闭键盘
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("查询")
+            }
+
+            if (msg.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                Text(msg)
+            }
+            Spacer(Modifier.height(12.dp))
+        }
+
+        // ✅ 列表项
+        items(result) { item ->
+            ServerRowSimple(
+                item = item,
+                onClick = { onOpenDetail(item) }
+            )
+            Divider()
+        }
+
+        item { Spacer(Modifier.height(20.dp)) }
     }
 }
 
