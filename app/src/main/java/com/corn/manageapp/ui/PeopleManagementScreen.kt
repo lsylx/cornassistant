@@ -75,6 +75,8 @@ fun PeopleManagementScreen(
     // 读取结果
     var lastUid by remember { mutableStateOf("") }
     var lastDoorNum by remember { mutableStateOf("") }
+    var lastCardType by remember { mutableStateOf("未知类型") }
+    var lastHasVcard by remember { mutableStateOf(false) }
     var verifyOk by remember { mutableStateOf<Boolean?>(null) }
     var hasNoteSignature by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -88,6 +90,7 @@ fun PeopleManagementScreen(
     val people by peopleRepository.peopleFlow.collectAsState(initial = emptyList())
     var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
+    var editingPerson by remember { mutableStateOf<Person?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var matchedPerson by remember { mutableStateOf<Person?>(null) }
     var hasReadCard by remember { mutableStateOf(false) }
@@ -105,22 +108,33 @@ fun PeopleManagementScreen(
             hasReadCard = true
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
-            // 从 vCard 找 NOTE 行
-            val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
-                ?.substringAfter("NOTE:", "")
-                ?.trim()
-                ?: ""
-            val noteExists = noteLine.isNotEmpty()
-            hasNoteSignature = noteExists
-            verifyOk = if (noteExists) {
-                VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
-            } else false
-            parsedLines = parseVCard(res.vcard)
+            lastCardType = res.tagType.ifBlank { "未知类型" }
             lastCounter = res.nfcCounter
-            lastVcard = res.vcard
             upgradeStatus = null
             localUpgradeError = null
-            matchedPerson = findMatchingPerson(res.vcard, currentPeople)
+            val vcardText = res.vcard
+            val hasVcard = vcardText.isNotBlank()
+            lastHasVcard = hasVcard
+            if (hasVcard) {
+                val noteLine = vcardText.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
+                    ?.substringAfter("NOTE:", "")
+                    ?.trim()
+                    ?: ""
+                val noteExists = noteLine.isNotEmpty()
+                hasNoteSignature = noteExists
+                verifyOk = if (noteExists) {
+                    VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
+                } else false
+                parsedLines = parseVCard(vcardText)
+                lastVcard = vcardText
+                matchedPerson = findMatchingPerson(vcardText, currentPeople)
+            } else {
+                hasNoteSignature = null
+                verifyOk = null
+                parsedLines = emptyList()
+                lastVcard = ""
+                matchedPerson = null
+            }
             currentPage = PeoplePage.READ
         }
     }
@@ -189,6 +203,7 @@ fun PeopleManagementScreen(
                             currentPage = PeoplePage.PEOPLE
                             detailPerson = null
                             isAddingPerson = false
+                            editingPerson = null
                         },
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -331,32 +346,44 @@ fun PeopleManagementScreen(
                 }) {
                     Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
 
-                    InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
-                    InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
+                    InfoLine("卡片 UID", lastUid.takeIf { hasReadCard && it.isNotEmpty() })
+                    InfoLine("卡片类型", lastCardType.takeIf { hasReadCard && it.isNotEmpty() })
+                    InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { hasReadCard && it.isNotEmpty() })
                     CounterInfo(lastCounter, hasReadCard)
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("验证结果：")
                         Spacer(Modifier.width(6.dp))
-                        when (verifyOk) {
-                            true -> {
-                                Icon(Icons.Filled.CheckCircle, contentDescription = "真", tint = MaterialTheme.colorScheme.primary)
+                        when {
+                            !hasReadCard -> Text("（请刷卡）")
+                            !lastHasVcard -> Text(
+                                "未检测到 vCard 数据",
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            verifyOk == true -> {
+                                Icon(
+                                    Icons.Filled.CheckCircle,
+                                    contentDescription = "真",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                                 Spacer(Modifier.width(4.dp))
                                 Text("真", color = MaterialTheme.colorScheme.primary)
                             }
-                            false -> {
-                                Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
+                            verifyOk == false -> {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = "假",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
                                 Spacer(Modifier.width(4.dp))
                                 val msg = if (hasNoteSignature == false) "假（缺少 NOTE 签名）" else "假"
                                 Text(msg, color = MaterialTheme.colorScheme.error)
                             }
-                            null -> {
-                                Text("（请刷卡）")
-                            }
+                            else -> Text("（请刷卡）")
                         }
                     }
 
-                    if (hasReadCard) {
+                    if (hasReadCard && lastHasVcard) {
                         MatchedPersonSection(
                             matchedPerson = matchedPerson,
                             onOpenDetail = { person ->
@@ -367,71 +394,75 @@ fun PeopleManagementScreen(
                         )
                     }
 
-                    if (parsedLines.isNotEmpty()) {
+                    if (lastHasVcard && parsedLines.isNotEmpty()) {
                         Divider()
                         parsedLines.forEach {
                             Text(it, style = MaterialTheme.typography.bodySmall)
                         }
-                    } else {
+                    } else if (!hasReadCard) {
                         Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
+                    } else if (!lastHasVcard) {
+                        Text("该卡片未检测到 vCard 信息", style = MaterialTheme.typography.bodySmall)
                     }
 
                     Spacer(Modifier.height(16.dp))
 
-                    val canUpgrade = lastUid.isNotEmpty() && lastVcard.isNotEmpty()
-                    Button(
-                        onClick = {
-                            if (canUpgrade) {
-                                val upgraded = VCardSigner.injectSignedNote(ctx, lastVcard, lastUid)
-                                if (upgraded == null) {
-                                    localUpgradeError = "❌ 无法生成签名，请先配置密钥"
-                                } else {
-                                    localUpgradeError = null
-                                    onUpgradeRequest(lastUid, upgraded)
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = canUpgrade && upgradeStatus !is NfcWriteResult.Waiting
-                    ) {
-                        Text("一键升级到新版本门卡")
-                    }
-
-                    localUpgradeError?.let {
-                        Text(it, color = MaterialTheme.colorScheme.error)
-                    }
-
-                    when (val status = upgradeStatus) {
-                        NfcWriteResult.Waiting -> {
-                            Text(
-                                "请再次贴卡完成升级…",
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
-                        }
-                        is NfcWriteResult.Success -> {
-                            Text(
-                                buildString {
-                                    append("✅ 升级完成 (UID: ")
-                                    append(status.uidHex)
-                                    append(")")
-                                    if (lastDoorNum.isNotEmpty()) {
-                                        append(" 门禁号：")
-                                        append(lastDoorNum)
+                    if (lastHasVcard) {
+                        val canUpgrade = lastUid.isNotEmpty() && lastVcard.isNotEmpty()
+                        Button(
+                            onClick = {
+                                if (canUpgrade) {
+                                    val upgraded = VCardSigner.injectSignedNote(ctx, lastVcard, lastUid)
+                                    if (upgraded == null) {
+                                        localUpgradeError = "❌ 无法生成签名，请先配置密钥"
+                                    } else {
+                                        localUpgradeError = null
+                                        onUpgradeRequest(lastUid, upgraded)
                                     }
-                                },
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = canUpgrade && upgradeStatus !is NfcWriteResult.Waiting
+                        ) {
+                            Text("一键升级到新版本门卡")
                         }
-                        is NfcWriteResult.Failure -> {
-                            Text(
-                                status.reason,
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
+
+                        localUpgradeError?.let {
+                            Text(it, color = MaterialTheme.colorScheme.error)
                         }
-                        null -> {}
+
+                        when (val status = upgradeStatus) {
+                            NfcWriteResult.Waiting -> {
+                                Text(
+                                    "请再次贴卡完成升级…",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            is NfcWriteResult.Success -> {
+                                Text(
+                                    buildString {
+                                        append("✅ 升级完成 (UID: ")
+                                        append(status.uidHex)
+                                        append(")")
+                                        if (lastDoorNum.isNotEmpty()) {
+                                            append(" 门禁号：")
+                                            append(lastDoorNum)
+                                        }
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            is NfcWriteResult.Failure -> {
+                                Text(
+                                    status.reason,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            null -> {}
+                        }
                     }
                 }
             }
@@ -448,6 +479,7 @@ fun PeopleManagementScreen(
                         currentPage = PeoplePage.MENU
                         detailPerson = null
                         isAddingPerson = false
+                        editingPerson = null
                     }) {
                         Text("← 返回")
                     }
@@ -467,6 +499,10 @@ fun PeopleManagementScreen(
                                     currentPage = PeoplePage.WRITE
                                     detailPerson = null
                                 },
+                                onEdit = { person ->
+                                    editingPerson = person
+                                    detailPerson = null
+                                },
                                 onDelete = { person ->
                                     coroutineScope.launch {
                                         AvatarStorage.deleteAvatar(person.avatarPath)
@@ -480,9 +516,30 @@ fun PeopleManagementScreen(
                             )
                         }
 
-                        isAddingPerson -> {
-                            AddPersonPage(
+                        editingPerson != null -> {
+                            PersonFormPage(
                                 modifier = Modifier.fillMaxWidth(),
+                                title = "编辑人员",
+                                initialPerson = editingPerson,
+                                onCancel = {
+                                    editingPerson = null
+                                },
+                                onSave = { person ->
+                                    coroutineScope.launch {
+                                        peopleRepository.upsert(person)
+                                    }
+                                    if (matchedPerson?.id == person.id) {
+                                        matchedPerson = person
+                                    }
+                                    editingPerson = null
+                                }
+                            )
+                        }
+
+                        isAddingPerson -> {
+                            PersonFormPage(
+                                modifier = Modifier.fillMaxWidth(),
+                                title = "添加人员",
                                 onCancel = { isAddingPerson = false },
                                 onSave = { person ->
                                     coroutineScope.launch {
@@ -497,8 +554,14 @@ fun PeopleManagementScreen(
                             PersonListPage(
                                 modifier = Modifier.fillMaxWidth(),
                                 people = people,
-                                onAdd = { isAddingPerson = true },
-                                onSelect = { person -> detailPerson = person }
+                                onAdd = {
+                                    editingPerson = null
+                                    isAddingPerson = true
+                                },
+                                onSelect = { person ->
+                                    editingPerson = null
+                                    detailPerson = person
+                                }
                             )
                         }
                     }
@@ -591,15 +654,17 @@ private fun parseVCard(vcard: String): List<String> {
 }
 
 /**
- * 计算“门禁卡号”：取 UID 的前 4 个字节（8个HEX字符），按大端解析成无符号整型，
- * 再格式化为 10 位十进制，不足左侧补 0。
+ * 计算“门禁卡号”：取 UID 的最后 4 个字节（8 个 HEX 字符），按大端解析成无符号整型，
+ * 再格式化为 10 位十进制，不足左侧补 0；若无法解析则返回“无法计算”。
  */
 private fun calcDoorNum10(uidHex: String): String {
     val clean = uidHex.replace("[^0-9A-Fa-f]".toRegex(), "")
-    if (clean.length < 8) return ""
-    val first4 = clean.substring(0, 8)
-    val value = first4.toULong(16).toLong() // 0..0xFFFFFFFF
-    return value.toString().padStart(10, '0')
+    if (clean.length < 8) return "无法计算"
+    return runCatching {
+        val last4 = clean.takeLast(8)
+        val value = last4.toULong(16).toLong()
+        value.toString().padStart(10, '0')
+    }.getOrElse { "无法计算" }
 }
 
 /* ----------------- 人员管理 ----------------- */
@@ -682,32 +747,102 @@ private fun PersonCard(person: Person, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AddPersonPage(
+private fun PersonFormPage(
     modifier: Modifier = Modifier,
+    title: String,
+    initialPerson: Person? = null,
     onCancel: () -> Unit,
     onSave: (Person) -> Unit
 ) {
-    var name by rememberSaveable { mutableStateOf("") }
-    var gender by rememberSaveable { mutableStateOf("男") }
-    var idNumber by rememberSaveable { mutableStateOf("") }
-    var phone by rememberSaveable { mutableStateOf("") }
-    var email by rememberSaveable { mutableStateOf("") }
-    var avatarPath by rememberSaveable { mutableStateOf<String?>(null) }
+    val initialId = initialPerson?.id
+    var name by rememberSaveable(initialId) { mutableStateOf(initialPerson?.name ?: "") }
+    var gender by rememberSaveable(initialId) { mutableStateOf(initialPerson?.gender ?: "男") }
+    var idNumber by rememberSaveable(initialId) { mutableStateOf(initialPerson?.idNumber ?: "") }
+    var phone by rememberSaveable(initialId) { mutableStateOf(initialPerson?.phone ?: "") }
+    var email by rememberSaveable(initialId) { mutableStateOf(initialPerson?.email ?: "") }
+    var avatarPath by rememberSaveable(initialId) { mutableStateOf(initialPerson?.avatarPath) }
+    var removeOriginalOnSave by rememberSaveable(initialId) { mutableStateOf(false) }
 
+    val originalAvatarPath = remember(initialId) { initialPerson?.avatarPath }
     val birthDate = remember(idNumber) { extractBirthDate(idNumber) }
     val isValid = name.isNotBlank() && phone.isNotBlank() && email.isNotBlank() && birthDate.isNotEmpty()
     val scope = rememberCoroutineScope()
+    val isEditing = initialPerson != null
+
+    fun handleAvatarChange(newPath: String?) {
+        val previous = avatarPath
+        if (previous != null && previous != originalAvatarPath) {
+            scope.launch { AvatarStorage.deleteAvatar(previous) }
+        }
+        if (newPath == null) {
+            if (previous == originalAvatarPath) {
+                removeOriginalOnSave = true
+            }
+            avatarPath = null
+        } else {
+            avatarPath = newPath
+            if (originalAvatarPath != null && newPath != originalAvatarPath) {
+                removeOriginalOnSave = true
+            }
+        }
+    }
+
+    fun cancelForm() {
+        val current = avatarPath
+        if (current != null && current != originalAvatarPath) {
+            scope.launch { AvatarStorage.deleteAvatar(current) }
+        }
+        avatarPath = originalAvatarPath
+        removeOriginalOnSave = false
+        onCancel()
+    }
+
+    fun saveForm() {
+        if (!isValid) return
+        val trimmedName = name.trim()
+        val trimmedPhone = phone.trim()
+        val trimmedEmail = email.trim()
+        val person = if (initialPerson != null) {
+            initialPerson.copy(
+                name = trimmedName,
+                gender = gender,
+                idNumber = idNumber.trim(),
+                birthDate = birthDate,
+                phone = trimmedPhone,
+                email = trimmedEmail,
+                avatarPath = avatarPath
+            )
+        } else {
+            Person(
+                name = trimmedName,
+                gender = gender,
+                idNumber = idNumber.trim(),
+                birthDate = birthDate,
+                phone = trimmedPhone,
+                email = trimmedEmail,
+                avatarPath = avatarPath
+            )
+        }
+        onSave(person)
+        if (initialPerson != null && removeOriginalOnSave && originalAvatarPath != null && originalAvatarPath != avatarPath) {
+            scope.launch { AvatarStorage.deleteAvatar(originalAvatarPath) }
+        }
+        removeOriginalOnSave = false
+    }
 
     Column(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("添加人员", style = MaterialTheme.typography.titleMedium)
-        Text("请填写人员信息，保存后将出现在人员列表中。", style = MaterialTheme.typography.bodySmall)
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        Text(
+            if (isEditing) "请修改人员信息，保存后将更新人员列表。" else "请填写人员信息，保存后将出现在人员列表中。",
+            style = MaterialTheme.typography.bodySmall
+        )
 
         AvatarPicker(
             avatarPath = avatarPath,
-            onAvatarChanged = { avatarPath = it },
+            onAvatarChanged = { handleAvatarChange(it) },
             displayName = name
         )
 
@@ -778,30 +913,10 @@ private fun AddPersonPage(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Button(onClick = {
-                if (isValid) {
-                    onSave(
-                        Person(
-                            name = name.trim(),
-                            gender = gender,
-                            idNumber = idNumber.trim(),
-                            birthDate = birthDate,
-                            phone = phone.trim(),
-                            email = email.trim(),
-                            avatarPath = avatarPath
-                        )
-                    )
-                }
-            }, enabled = isValid) {
+            Button(onClick = { saveForm() }, enabled = isValid) {
                 Text("保存")
             }
-            TextButton(onClick = {
-                scope.launch {
-                    AvatarStorage.deleteAvatar(avatarPath)
-                    avatarPath = null
-                    onCancel()
-                }
-            }) {
+            TextButton(onClick = { cancelForm() }) {
                 Text("取消")
             }
         }
@@ -856,6 +971,7 @@ private fun PersonDetailPage(
     person: Person,
     onBack: () -> Unit,
     onFillWrite: () -> Unit,
+    onEdit: (Person) -> Unit,
     onDelete: (Person) -> Unit
 ) {
     Column(
@@ -881,7 +997,11 @@ private fun PersonDetailPage(
             DetailLine("邮箱", person.email)
         }
 
-        Button(onClick = onFillWrite, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { onEdit(person) }, modifier = Modifier.fillMaxWidth()) {
+            Text("编辑资料")
+        }
+
+        OutlinedButton(onClick = onFillWrite, modifier = Modifier.fillMaxWidth()) {
             Text("填入写卡页面")
         }
 
@@ -921,7 +1041,6 @@ private fun AvatarPicker(
             scope.launch {
                 val path = AvatarStorage.saveBitmap(context, bitmap)
                 if (path != null) {
-                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
                     onAvatarChanged(path)
                 }
             }
@@ -932,7 +1051,6 @@ private fun AvatarPicker(
             scope.launch {
                 val path = AvatarStorage.copyFromUri(context, uri)
                 if (path != null) {
-                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
                     onAvatarChanged(path)
                 }
             }
@@ -958,12 +1076,7 @@ private fun AvatarPicker(
             }
         }
         if (avatarPath != null) {
-            TextButton(onClick = {
-                scope.launch {
-                    AvatarStorage.deleteAvatar(avatarPath)
-                    onAvatarChanged(null)
-                }
-            }) {
+            TextButton(onClick = { onAvatarChanged(null) }) {
                 Text("移除头像")
             }
         }

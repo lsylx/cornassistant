@@ -12,10 +12,15 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
+import android.nfc.tech.MifareClassic
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.nfc.tech.NfcA
+import android.nfc.tech.NfcB
+import android.nfc.tech.NfcF
+import android.nfc.tech.NfcV
 import android.os.Bundle
 
 import androidx.activity.ComponentActivity
@@ -104,7 +109,7 @@ class MainActivity : ComponentActivity() {
                     Scaffold { inner ->
                         when (current) {
                             AppDestinations.HOME ->
-                                Greeting("COMCORN Cloud", Modifier.padding(inner))
+                                Greeting(Modifier.padding(inner))
 
                             /** ✅ 人员管理：新版签名/验证接口 */
                             AppDestinations.PEOPLE ->
@@ -189,6 +194,7 @@ class MainActivity : ComponentActivity() {
 
         // ✅ 统一取 UID（HEX 大写）
         val uidHex = tag?.id?.joinToString("") { "%02X".format(it) } ?: ""
+        val tagType = detectTagType(tag)
 
         // ✅ 写卡：如果有待写入信息，则对 UID 做 Ed25519 签名并生成 vCard 写入
         pendingWriteRequest?.let { request ->
@@ -243,7 +249,8 @@ class MainActivity : ComponentActivity() {
                         NfcReadResult(
                             uidHex = uidHex,
                             vcard = sb.toString(),
-                            nfcCounter = counter
+                            nfcCounter = counter,
+                            tagType = tagType
                         )
                     )
                 } catch (_: Exception) {
@@ -371,6 +378,28 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun detectTagType(tag: Tag?): String {
+        tag ?: return "未知类型"
+        val techList = tag.techList ?: return "未知类型"
+        val techExtras = techList.mapIndexed { index, tech -> tech to tag.getTechExtras(index) }.toMap()
+
+        fun has(clazz: Class<*>) = techList.contains(clazz.name)
+
+        return when {
+            has(MifareClassic::class.java) -> "Mifare Classic"
+            has(MifareUltralight::class.java) -> "NTAG"
+            has(IsoDep::class.java) -> {
+                val sak = techExtras[NfcA::class.java.name]?.getShort("sak")?.toInt()?.and(0xFF) ?: 0
+                if (sak == 0x20 || sak == 0x24 || sak == 0x28) "Desfire" else "CPU卡"
+            }
+            has(NfcF::class.java) -> "FeliCa"
+            has(NfcV::class.java) -> "NFC-V"
+            has(NfcB::class.java) -> "CPU卡"
+            has(NfcA::class.java) -> "NFC-A"
+            else -> "未知类型"
+        }
+    }
 }
 
 private fun NdefRecord.toDecodedText(): String {
@@ -396,7 +425,8 @@ private fun NdefRecord.toDecodedText(): String {
 data class NfcReadResult(
     val uidHex: String,
     val vcard: String,
-    val nfcCounter: Int?
+    val nfcCounter: Int?,
+    val tagType: String
 )
 
 sealed class NfcWriteResult {
@@ -465,7 +495,7 @@ fun SettingsScreen(
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
+fun Greeting(modifier: Modifier = Modifier) {
     val scrollState = rememberScrollState()
     Box(
         modifier
@@ -473,6 +503,6 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
             .verticalScroll(scrollState),
         contentAlignment = Alignment.Center
     ) {
-        Text("Welcome to $name!", style = MaterialTheme.typography.titleLarge)
+        Text("欢迎使用裕米小助手", style = MaterialTheme.typography.titleLarge)
     }
 }
