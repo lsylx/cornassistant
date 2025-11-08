@@ -12,10 +12,14 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
+import android.nfc.tech.MifareClassic
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.nfc.tech.NfcA
+import android.nfc.tech.NfcF
+import android.nfc.tech.NfcV
 import android.os.Bundle
 
 import androidx.activity.ComponentActivity
@@ -104,7 +108,7 @@ class MainActivity : ComponentActivity() {
                     Scaffold { inner ->
                         when (current) {
                             AppDestinations.HOME ->
-                                Greeting("COMCORN Cloud", Modifier.padding(inner))
+                                Greeting(Modifier.padding(inner))
 
                             /** ✅ 人员管理：新版签名/验证接口 */
                             AppDestinations.PEOPLE ->
@@ -243,7 +247,8 @@ class MainActivity : ComponentActivity() {
                         NfcReadResult(
                             uidHex = uidHex,
                             vcard = sb.toString(),
-                            nfcCounter = counter
+                            nfcCounter = counter,
+                            tagType = resolveTagType(tag)
                         )
                     )
                 } catch (_: Exception) {
@@ -396,7 +401,8 @@ private fun NdefRecord.toDecodedText(): String {
 data class NfcReadResult(
     val uidHex: String,
     val vcard: String,
-    val nfcCounter: Int?
+    val nfcCounter: Int?,
+    val tagType: String?
 )
 
 sealed class NfcWriteResult {
@@ -465,7 +471,7 @@ fun SettingsScreen(
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
+fun Greeting(modifier: Modifier = Modifier) {
     val scrollState = rememberScrollState()
     Box(
         modifier
@@ -473,6 +479,22 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
             .verticalScroll(scrollState),
         contentAlignment = Alignment.Center
     ) {
-        Text("Welcome to $name!", style = MaterialTheme.typography.titleLarge)
+        Text("欢迎使用裕米小助手", style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+private fun resolveTagType(tag: Tag?): String? {
+    val techs = tag?.techList ?: return null
+    fun hasTech(clazz: Class<*>) = techs.any { it == clazz.name }
+    fun hasTechName(name: String) = techs.any { it.endsWith(name) }
+
+    return when {
+        hasTech(MifareUltralight::class.java) || hasTechName("MifareUltralight") -> "NTAG"
+        hasTech(MifareClassic::class.java) || hasTechName("MifareClassic") -> "Mifare Classic"
+        techs.any { it.contains("Desfire", ignoreCase = true) } -> "Desfire"
+        hasTech(IsoDep::class.java) -> "CPU卡"
+        hasTech(NfcV::class.java) -> "NFC-V"
+        hasTech(NfcF::class.java) -> "FeliCa"
+        else -> techs.joinToString(separator = "/") { it.substringAfterLast('.') }.ifBlank { null }
     }
 }

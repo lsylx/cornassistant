@@ -5,9 +5,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -17,103 +23,169 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 
 @Composable
+private data class DetailSection(val title: String, val items: List<Pair<String, String?>>)
+
 fun DeviceDetailScreen(
     item: HardwareItem,
     onBack: () -> Unit
 ) {
-    // ✅ 整页可滑动，适配超小屏 240×320
-    LazyColumn(
+    val sections = remember(item) {
+        listOf(
+            DetailSection(
+                "基本信息",
+                listOf(
+                    "内部标签" to item.nbtag,
+                    "物理标签" to item.wltag,
+                    "型号" to item.typename,
+                    "电源" to item.power,
+                    "上架时间" to item.time,
+                    "类型" to item.stype,
+                    "服务器ID" to item.serverid,
+                    "机房" to item.house_name,
+                    "机柜" to item.cname
+                )
+            ),
+            DetailSection(
+                "网络",
+                listOf(
+                    "主IP" to item.zhuip,
+                    "子网掩码" to item.subnetmask,
+                    "网关" to item.gateway,
+                    "VLAN" to item.vlan,
+                    "VLAN ID" to item.vlanid,
+                    "交换机端口" to combineSwitch(item.switch_id, item.switch_num_name, item.switch_num),
+                    "上行带宽" to item.in_bw,
+                    "下行带宽" to item.out_bw,
+                    "MAC" to item.mac,
+                    "端口MAC" to jsonArrayToInline(item.port_mac),
+                    "IP 列表" to normalizeIpList(item.ip)
+                )
+            ),
+            DetailSection(
+                "电源状态",
+                listOf(
+                    "IPMI 支持" to item.ipmi_support,
+                    "IPMI IP" to item.ipmi_ip,
+                    "IPMI 用户名" to item.ipmi_name,
+                    "IPMI 密码" to item.ipmi_pass,
+                    "电源信息" to item.power_msg
+                )
+            ),
+            DetailSection(
+                "硬件",
+                listOf(
+                    "CPU" to normalizeCpu(item.cpu),
+                    "内存" to normalizeNameNumArray(item.ram),
+                    "硬盘" to normalizeNameNumArray(item.disk),
+                    "PCI" to normalizeNameNumArray(item.pci),
+                    "硬盘数量" to item.disk_num,
+                    "硬盘容量" to jsonArrayToInline(item.disk_size)
+                )
+            ),
+            DetailSection(
+                "系统",
+                listOf(
+                    "OS 名称" to item.osname,
+                    "OS ID" to item.os_id,
+                    "OS 组" to item.os_group_id,
+                    "系统账号" to item.osusername,
+                    "系统密码" to item.ospassword,
+                    "默认用户" to item.default_user,
+                    "破解用户" to item.crack_user
+                )
+            ),
+            DetailSection(
+                "其它",
+                listOf(
+                    "锁定" to item.lock,
+                    "平均流量" to item.average_flow,
+                    "机柜ID" to item.cid,
+                    "机房ID" to item.house,
+                    "合计" to item.sum
+                )
+            )
+        )
+    }
+
+    var selectedTab by rememberSaveable(item.id) { mutableStateOf(0) }
+    if (selectedTab !in sections.indices) {
+        selectedTab = 0
+    }
+    val activeSection = sections.getOrNull(selectedTab) ?: sections.first()
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(12.dp)
     ) {
-
-        item {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             TextButton(onClick = onBack) { Text("← 返回") }
-            Text("设备详情", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "内部标签：${item.nbtag?.takeIf { it.isNotBlank() } ?: "-"}",
+                style = MaterialTheme.typography.bodySmall
+            )
         }
 
-        // ✅ 统一封装每一段 Section + 内容
-        item {
-            SectionTitle("基本信息")
-            Info("内部标签", item.nbtag)
-            Info("物理标签", item.wltag)
-            Info("型号", item.typename)
-            Info("电源", item.power)
-            Info("上架时间", item.time)
-            Info("类型", item.stype)
-            Info("服务器ID", item.serverid)
-            Info("机房", item.house_name)
-            Info("机柜", item.cname)
+        Text(
+            text = "设备详情",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+        )
+
+        ScrollableTabRow(
+            selectedTabIndex = selectedTab,
+            modifier = Modifier.fillMaxWidth(),
+            edgePadding = 0.dp,
+            divider = {}
+        ) {
+            sections.forEachIndexed { index, section ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = { Text(section.title, style = MaterialTheme.typography.bodySmall) }
+                )
+            }
         }
 
-        item {
-            SectionTitle("网络信息")
-            Info("主IP", item.zhuip)
-            Info("子网掩码", item.subnetmask)
-            Info("网关", item.gateway)
-            Info("VLAN", item.vlan)
-            Info("VLAN ID", item.vlanid)
-            Info("交换机端口", combineSwitch(item.switch_id, item.switch_num_name, item.switch_num))
-            Info("上行带宽", item.in_bw)
-            Info("下行带宽", item.out_bw)
-            Info("MAC", item.mac)
-            Info("端口MAC", jsonArrayToInline(item.port_mac))
-            Info("IP 列表", normalizeIpList(item.ip))
-        }
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            item {
+                Text(activeSection.title, style = MaterialTheme.typography.titleMedium)
+                Divider()
+            }
 
-        item {
-            SectionTitle("IPMI / 电源")
-            Info("IPMI 支持", item.ipmi_support)
-            Info("IPMI IP", item.ipmi_ip)
-            Info("IPMI 用户名", item.ipmi_name)
-            Info("IPMI 密码", item.ipmi_pass)
-            Info("电源信息", item.power_msg)
-        }
+            val entries = activeSection.items.mapNotNull { (label, value) ->
+                val display = value?.takeIf { it.isNotBlank() && it != "null" }
+                display?.let { label to it }
+            }
 
-        item {
-            SectionTitle("硬件")
-            Info("CPU", normalizeCpu(item.cpu))
-            Info("内存", normalizeNameNumArray(item.ram))
-            Info("硬盘", normalizeNameNumArray(item.disk))
-            Info("PCI", normalizeNameNumArray(item.pci))
-            Info("硬盘数量", item.disk_num)
-            Info("硬盘容量", jsonArrayToInline(item.disk_size))
-        }
-
-        item {
-            SectionTitle("系统")
-            Info("OS 名称", item.osname)
-            Info("OS ID", item.os_id)
-            Info("OS 组", item.os_group_id)
-            Info("系统账号", item.osusername)
-            Info("系统密码", item.ospassword)
-            Info("默认用户", item.default_user)
-            Info("破解用户", item.crack_user)
-        }
-
-        item {
-            SectionTitle("其它")
-            Info("锁定", item.lock)
-            Info("平均流量", item.average_flow)
-            Info("机柜ID", item.cid)
-            Info("机房ID", item.house)
-            Info("合计", item.sum)
-            Spacer(Modifier.height(20.dp))
+            if (entries.isEmpty()) {
+                item {
+                    Text(
+                        "暂无数据",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            } else {
+                items(entries) { (label, value) ->
+                    Info(label, value)
+                }
+            }
         }
     }
 }
 
 /* =========================  UI 小组件  ========================= */
-
-@Composable
-private fun SectionTitle(text: String) {
-    Spacer(Modifier.height(12.dp))
-    Text(text, style = MaterialTheme.typography.titleMedium)
-    Divider()
-    Spacer(Modifier.height(6.dp))
-}
 
 /** ✅ 只保留一个 Info（避免 JVM 冲突） */
 @Composable
