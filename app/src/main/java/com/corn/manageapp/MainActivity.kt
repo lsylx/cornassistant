@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
         val dcimRepo = DcimConfigRepository(this)
         setContent {
             MyApplicationTheme {
+                val peopleRepo = remember { PeopleRepository(this@MainActivity) }
                 var current by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
                 var detailItem by remember { mutableStateOf<HardwareItem?>(null) }
 
@@ -109,6 +110,7 @@ class MainActivity : ComponentActivity() {
                             AppDestinations.PEOPLE ->
                                 PeopleManagementScreen(
                                     modifier = Modifier.padding(inner),
+                                    peopleRepository = peopleRepo,
                                     onWriteRequest = { name, phone, emailPrefix, enableCounter ->
                                         pendingUpgradeRequest = null
                                         pendingWriteRequest = PendingWriteRequest(name, phone, emailPrefix, enableCounter)
