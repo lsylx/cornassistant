@@ -75,6 +75,7 @@ fun PeopleManagementScreen(
     // 读取结果
     var lastUid by remember { mutableStateOf("") }
     var lastDoorNum by remember { mutableStateOf("") }
+    var lastTagType by remember { mutableStateOf("") }
     var verifyOk by remember { mutableStateOf<Boolean?>(null) }
     var hasNoteSignature by remember { mutableStateOf<Boolean?>(null) }
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -88,6 +89,7 @@ fun PeopleManagementScreen(
     val people by peopleRepository.peopleFlow.collectAsState(initial = emptyList())
     var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
+    var editingPerson by remember { mutableStateOf<Person?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var matchedPerson by remember { mutableStateOf<Person?>(null) }
     var hasReadCard by remember { mutableStateOf(false) }
@@ -105,22 +107,29 @@ fun PeopleManagementScreen(
             hasReadCard = true
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
-            // 从 vCard 找 NOTE 行
-            val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
-                ?.substringAfter("NOTE:", "")
-                ?.trim()
-                ?: ""
-            val noteExists = noteLine.isNotEmpty()
-            hasNoteSignature = noteExists
-            verifyOk = if (noteExists) {
-                VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
-            } else false
-            parsedLines = parseVCard(res.vcard)
+            lastTagType = res.tagType
+            val hasVcard = res.vcard.isNotBlank()
+            if (hasVcard) {
+                val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
+                    ?.substringAfter("NOTE:", "")
+                    ?.trim()
+                    ?: ""
+                val noteExists = noteLine.isNotEmpty()
+                hasNoteSignature = noteExists
+                verifyOk = if (noteExists) {
+                    VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
+                } else false
+                parsedLines = parseVCard(res.vcard)
+            } else {
+                hasNoteSignature = null
+                verifyOk = null
+                parsedLines = emptyList()
+            }
             lastCounter = res.nfcCounter
             lastVcard = res.vcard
             upgradeStatus = null
             localUpgradeError = null
-            matchedPerson = findMatchingPerson(res.vcard, currentPeople)
+            matchedPerson = if (hasVcard) findMatchingPerson(res.vcard, currentPeople) else null
             currentPage = PeoplePage.READ
         }
     }
@@ -151,6 +160,9 @@ fun PeopleManagementScreen(
     LaunchedEffect(people) {
         detailPerson?.let { current ->
             detailPerson = people.firstOrNull { it.id == current.id }
+        }
+        editingPerson?.let { current ->
+            editingPerson = people.firstOrNull { it.id == current.id }
         }
         matchedPerson?.let { current ->
             matchedPerson = people.firstOrNull { it.id == current.id }
@@ -211,15 +223,21 @@ fun PeopleManagementScreen(
                         }
                     }
 
-                    if (lastUid.isNotEmpty() || lastDoorNum.isNotEmpty()) {
+                    if (hasReadCard) {
                         Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
-                                if (lastUid.isNotEmpty()) {
-                                    Text("最近读取 UID：$lastUid", style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (lastDoorNum.isNotEmpty()) {
-                                    Text("门禁号：$lastDoorNum", style = MaterialTheme.typography.bodySmall)
-                                }
+                                Text(
+                                    "最近读取 UID：${lastUid.ifEmpty { "未知" }}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "卡片类型：${lastTagType.ifEmpty { "未知卡片" }}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    "门禁号：${lastDoorNum.ifEmpty { "未知" }}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
                     }
@@ -331,32 +349,39 @@ fun PeopleManagementScreen(
                 }) {
                     Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
 
-                    InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
-                    InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
+                    InfoLine("卡片 UID", lastUid.ifEmpty { "未知" })
+                    InfoLine("卡片类型", lastTagType.ifEmpty { "未知卡片" })
+                    InfoLine("门禁卡号（10位）", lastDoorNum.ifEmpty { "未知" })
                     CounterInfo(lastCounter, hasReadCard)
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("验证结果：")
                         Spacer(Modifier.width(6.dp))
-                        when (verifyOk) {
-                            true -> {
+                        when {
+                            !hasReadCard -> {
+                                Text("（请刷卡）")
+                            }
+                            lastVcard.isBlank() -> {
+                                Text("（无 vCard 数据）", color = MaterialTheme.colorScheme.outline)
+                            }
+                            verifyOk == true -> {
                                 Icon(Icons.Filled.CheckCircle, contentDescription = "真", tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(4.dp))
                                 Text("真", color = MaterialTheme.colorScheme.primary)
                             }
-                            false -> {
+                            verifyOk == false -> {
                                 Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
                                 Spacer(Modifier.width(4.dp))
                                 val msg = if (hasNoteSignature == false) "假（缺少 NOTE 签名）" else "假"
                                 Text(msg, color = MaterialTheme.colorScheme.error)
                             }
-                            null -> {
+                            else -> {
                                 Text("（请刷卡）")
                             }
                         }
                     }
 
-                    if (hasReadCard) {
+                    if (hasReadCard && lastVcard.isNotBlank()) {
                         MatchedPersonSection(
                             matchedPerson = matchedPerson,
                             onOpenDetail = { person ->
@@ -372,8 +397,10 @@ fun PeopleManagementScreen(
                         parsedLines.forEach {
                             Text(it, style = MaterialTheme.typography.bodySmall)
                         }
-                    } else {
+                    } else if (!hasReadCard) {
                         Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
+                    } else if (lastVcard.isBlank()) {
+                        Text("卡片不包含 vCard 数据", style = MaterialTheme.typography.bodySmall)
                     }
 
                     Spacer(Modifier.height(16.dp))
@@ -448,11 +475,38 @@ fun PeopleManagementScreen(
                         currentPage = PeoplePage.MENU
                         detailPerson = null
                         isAddingPerson = false
+                        editingPerson = null
                     }) {
                         Text("← 返回")
                     }
 
                     when {
+                        editingPerson != null -> {
+                            val editing = editingPerson!!
+                            EditPersonPage(
+                                modifier = Modifier.fillMaxWidth(),
+                                person = editing,
+                                onCancel = {
+                                    editingPerson = null
+                                    detailPerson = editing
+                                },
+                                onSave = { updated ->
+                                    val original = editing
+                                    coroutineScope.launch {
+                                        peopleRepository.upsert(updated)
+                                        if (original.avatarPath != updated.avatarPath) {
+                                            AvatarStorage.deleteAvatar(original.avatarPath)
+                                        }
+                                    }
+                                    detailPerson = updated
+                                    editingPerson = null
+                                    if (matchedPerson?.id == original.id) {
+                                        matchedPerson = updated
+                                    }
+                                }
+                            )
+                        }
+
                         detailPerson != null -> {
                             PersonDetailPage(
                                 modifier = Modifier.fillMaxWidth(),
@@ -466,6 +520,12 @@ fun PeopleManagementScreen(
                                     }
                                     currentPage = PeoplePage.WRITE
                                     detailPerson = null
+                                    editingPerson = null
+                                },
+                                onEdit = { person ->
+                                    editingPerson = person
+                                    detailPerson = null
+                                    isAddingPerson = false
                                 },
                                 onDelete = { person ->
                                     coroutineScope.launch {
@@ -476,6 +536,7 @@ fun PeopleManagementScreen(
                                         matchedPerson = null
                                     }
                                     detailPerson = null
+                                    editingPerson = null
                                 }
                             )
                         }
@@ -591,15 +652,19 @@ private fun parseVCard(vcard: String): List<String> {
 }
 
 /**
- * 计算“门禁卡号”：取 UID 的前 4 个字节（8个HEX字符），按大端解析成无符号整型，
+ * 计算“门禁卡号”：取 UID 的后 4 个字节（8 个 HEX 字符），按大端解析成无符号整型，
  * 再格式化为 10 位十进制，不足左侧补 0。
  */
 private fun calcDoorNum10(uidHex: String): String {
     val clean = uidHex.replace("[^0-9A-Fa-f]".toRegex(), "")
-    if (clean.length < 8) return ""
-    val first4 = clean.substring(0, 8)
-    val value = first4.toULong(16).toLong() // 0..0xFFFFFFFF
-    return value.toString().padStart(10, '0')
+    if (clean.isEmpty()) return ""
+    val last8 = clean.takeLast(8).padStart(8, '0')
+    return try {
+        val value = last8.toULong(16).toLong()
+        value.toString().padStart(10, '0')
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 /* ----------------- 人员管理 ----------------- */
@@ -707,7 +772,13 @@ private fun AddPersonPage(
 
         AvatarPicker(
             avatarPath = avatarPath,
-            onAvatarChanged = { avatarPath = it },
+            onAvatarChanged = { newPath ->
+                val old = avatarPath
+                avatarPath = newPath
+                if (old != null && old != newPath) {
+                    scope.launch { AvatarStorage.deleteAvatar(old) }
+                }
+            },
             displayName = name
         )
 
@@ -809,6 +880,142 @@ private fun AddPersonPage(
 }
 
 @Composable
+private fun EditPersonPage(
+    modifier: Modifier = Modifier,
+    person: Person,
+    onCancel: () -> Unit,
+    onSave: (Person) -> Unit
+) {
+    val originalAvatar = remember(person.id) { person.avatarPath }
+    var name by rememberSaveable(person.id) { mutableStateOf(person.name) }
+    var gender by rememberSaveable(person.id) { mutableStateOf(person.gender) }
+    var idNumber by rememberSaveable(person.id) { mutableStateOf(person.idNumber) }
+    var phone by rememberSaveable(person.id) { mutableStateOf(person.phone) }
+    var email by rememberSaveable(person.id) { mutableStateOf(person.email) }
+    var avatarPath by rememberSaveable(person.id) { mutableStateOf(person.avatarPath) }
+
+    val birthDate = remember(idNumber) { extractBirthDate(idNumber) }
+    val isValid = name.isNotBlank() && phone.isNotBlank() && email.isNotBlank() && birthDate.isNotEmpty()
+    val scope = rememberCoroutineScope()
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("编辑人员", style = MaterialTheme.typography.titleMedium)
+        Text("更新人员信息，保存后会覆盖原有记录。", style = MaterialTheme.typography.bodySmall)
+
+        AvatarPicker(
+            avatarPath = avatarPath,
+            onAvatarChanged = { newPath ->
+                val old = avatarPath
+                avatarPath = newPath
+                if (old != null && old != originalAvatar && old != newPath) {
+                    scope.launch { AvatarStorage.deleteAvatar(old) }
+                }
+            },
+            displayName = name
+        )
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("姓名") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("性别：")
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = gender == "男",
+                onClick = { gender = "男" },
+                label = { Text("男") },
+                leadingIcon = if (gender == "男") {
+                    { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
+                } else null
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = gender == "女",
+                onClick = { gender = "女" },
+                label = { Text("女") },
+                leadingIcon = if (gender == "女") {
+                    { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
+                } else null
+            )
+        }
+
+        OutlinedTextField(
+            value = idNumber,
+            onValueChange = { idNumber = it },
+            label = { Text("身份证号") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (idNumber.isNotBlank()) {
+            Text(
+                if (birthDate.isNotEmpty()) "出生日期：$birthDate" else "身份证号格式不正确，无法解析出生日期",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (birthDate.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+        }
+
+        OutlinedTextField(
+            value = phone,
+            onValueChange = { phone = it },
+            label = { Text("手机号") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("邮箱") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(onClick = {
+                if (isValid) {
+                    onSave(
+                        person.copy(
+                            name = name.trim(),
+                            gender = gender,
+                            idNumber = idNumber.trim(),
+                            birthDate = birthDate,
+                            phone = phone.trim(),
+                            email = email.trim(),
+                            avatarPath = avatarPath
+                        )
+                    )
+                }
+            }, enabled = isValid) {
+                Text("保存")
+            }
+            TextButton(onClick = {
+                scope.launch {
+                    if (avatarPath != null && avatarPath != originalAvatar) {
+                        AvatarStorage.deleteAvatar(avatarPath)
+                    }
+                    onCancel()
+                }
+            }) {
+                Text("取消")
+            }
+        }
+    }
+}
+
+@Composable
 private fun PersonListPage(
     modifier: Modifier = Modifier,
     people: List<Person>,
@@ -856,6 +1063,7 @@ private fun PersonDetailPage(
     person: Person,
     onBack: () -> Unit,
     onFillWrite: () -> Unit,
+    onEdit: (Person) -> Unit,
     onDelete: (Person) -> Unit
 ) {
     Column(
@@ -881,7 +1089,11 @@ private fun PersonDetailPage(
             DetailLine("邮箱", person.email)
         }
 
-        Button(onClick = onFillWrite, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = { onEdit(person) }, modifier = Modifier.fillMaxWidth()) {
+            Text("编辑信息")
+        }
+
+        OutlinedButton(onClick = onFillWrite, modifier = Modifier.fillMaxWidth()) {
             Text("填入写卡页面")
         }
 
@@ -921,7 +1133,6 @@ private fun AvatarPicker(
             scope.launch {
                 val path = AvatarStorage.saveBitmap(context, bitmap)
                 if (path != null) {
-                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
                     onAvatarChanged(path)
                 }
             }
@@ -932,7 +1143,6 @@ private fun AvatarPicker(
             scope.launch {
                 val path = AvatarStorage.copyFromUri(context, uri)
                 if (path != null) {
-                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
                     onAvatarChanged(path)
                 }
             }
@@ -959,10 +1169,7 @@ private fun AvatarPicker(
         }
         if (avatarPath != null) {
             TextButton(onClick = {
-                scope.launch {
-                    AvatarStorage.deleteAvatar(avatarPath)
-                    onAvatarChanged(null)
-                }
+                scope.launch { onAvatarChanged(null) }
             }) {
                 Text("移除头像")
             }
