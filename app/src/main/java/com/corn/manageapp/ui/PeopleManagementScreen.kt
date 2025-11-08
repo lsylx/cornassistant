@@ -57,7 +57,7 @@ fun PeopleManagementScreen(
 
     // 人员管理
     val people = remember { mutableStateListOf<Person>() }
-    var showAddDialog by remember { mutableStateOf(false) }
+    var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
 
     // 注册 NFC 读取回调（组件进入时）
@@ -229,7 +229,7 @@ fun PeopleManagementScreen(
 
                         InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
                         InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
-                        InfoLine("NFC 计数器", lastCounter?.toString())
+                        CounterInfo(lastCounter)
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("验证结果：")
@@ -265,42 +265,55 @@ fun PeopleManagementScreen(
 
                 // 人员
                 2 -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                    ) {
-                        Text("人员列表", style = MaterialTheme.typography.titleMedium)
-                        Spacer(Modifier.height(12.dp))
-
-                        if (people.isEmpty()) {
-                            Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text("暂无人员，请点击下方按钮添加", style = MaterialTheme.typography.bodyMedium)
-                                }
-                            }
-                        } else {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                people.forEach { person ->
-                                    PersonCard(person = person, onClick = { detailPerson = person })
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(24.dp))
-
-                        Button(
-                            onClick = { showAddDialog = true },
+                    if (isAddingPerson) {
+                        AddPersonPage(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 12.dp)
+                                .padding(12.dp),
+                            onCancel = { isAddingPerson = false },
+                            onSave = { person ->
+                                people.add(person)
+                                isAddingPerson = false
+                            }
+                        )
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp)
                         ) {
-                            Text("添加人员")
+                            Text("人员列表", style = MaterialTheme.typography.titleMedium)
+                            Spacer(Modifier.height(12.dp))
+
+                            if (people.isEmpty()) {
+                                Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text("暂无人员，请点击下方按钮添加", style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                }
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    people.forEach { person ->
+                                        PersonCard(person = person, onClick = { detailPerson = person })
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(24.dp))
+
+                            Button(
+                                onClick = { isAddingPerson = true },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 12.dp)
+                            ) {
+                                Text("添加人员")
+                            }
                         }
                     }
                 }
@@ -317,16 +330,6 @@ fun PeopleManagementScreen(
                     }
                 }
             }
-    }
-
-    if (showAddDialog) {
-        AddPersonDialog(
-            onDismiss = { showAddDialog = false },
-            onConfirm = { person ->
-                people.add(person)
-                showAddDialog = false
-            }
-        )
     }
 
     detailPerson?.let { person ->
@@ -357,6 +360,26 @@ private fun InfoLine(label: String, value: String?) {
         AssistChip(onClick = {}, label = { Text(label) })
         Spacer(Modifier.width(8.dp))
         Text(value, style = MaterialTheme.typography.titleMedium)
+    }
+}
+
+@Composable
+private fun CounterInfo(counter: Int?) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AssistChip(onClick = {}, label = { Text("NFC 计数器") })
+        Spacer(Modifier.width(8.dp))
+        if (counter != null) {
+            Text(counter.toString(), style = MaterialTheme.typography.titleMedium)
+        } else {
+            Text(
+                "未启用或不支持",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.outline
+            )
+        }
     }
 }
 
@@ -412,22 +435,98 @@ private fun PersonCard(person: Person, onClick: () -> Unit) {
 }
 
 @Composable
-private fun AddPersonDialog(onDismiss: () -> Unit, onConfirm: (Person) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var gender by remember { mutableStateOf("男") }
-    var idNumber by remember { mutableStateOf("") }
-    var phone by remember { mutableStateOf("") }
-    var email by remember { mutableStateOf("") }
+private fun AddPersonPage(
+    modifier: Modifier = Modifier,
+    onCancel: () -> Unit,
+    onSave: (Person) -> Unit
+) {
+    var name by rememberSaveable { mutableStateOf("") }
+    var gender by rememberSaveable { mutableStateOf("男") }
+    var idNumber by rememberSaveable { mutableStateOf("") }
+    var phone by rememberSaveable { mutableStateOf("") }
+    var email by rememberSaveable { mutableStateOf("") }
 
     val birthDate = remember(idNumber) { extractBirthDate(idNumber) }
     val isValid = name.isNotBlank() && phone.isNotBlank() && email.isNotBlank() && birthDate.isNotEmpty()
+    val scrollState = rememberScrollState()
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = {
+    Column(
+        modifier = modifier.verticalScroll(scrollState),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("添加人员", style = MaterialTheme.typography.titleMedium)
+        Text("请填写人员信息，保存后将出现在人员列表中。", style = MaterialTheme.typography.bodySmall)
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("姓名") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("性别：")
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = gender == "男",
+                onClick = { gender = "男" },
+                label = { Text("男") },
+                leadingIcon = if (gender == "男") {
+                    { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
+                } else null
+            )
+            Spacer(Modifier.width(8.dp))
+            FilterChip(
+                selected = gender == "女",
+                onClick = { gender = "女" },
+                label = { Text("女") },
+                leadingIcon = if (gender == "女") {
+                    { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
+                } else null
+            )
+        }
+
+        OutlinedTextField(
+            value = idNumber,
+            onValueChange = { idNumber = it },
+            label = { Text("身份证号") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        if (idNumber.isNotBlank()) {
+            Text(
+                if (birthDate.isNotEmpty()) "出生日期：$birthDate" else "身份证号格式不正确，无法解析出生日期",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (birthDate.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            )
+        }
+
+        OutlinedTextField(
+            value = phone,
+            onValueChange = { phone = it },
+            label = { Text("手机号") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("邮箱") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Button(onClick = {
                 if (isValid) {
-                    onConfirm(
+                    onSave(
                         Person(
                             name = name.trim(),
                             gender = gender,
@@ -441,70 +540,11 @@ private fun AddPersonDialog(onDismiss: () -> Unit, onConfirm: (Person) -> Unit) 
             }, enabled = isValid) {
                 Text("保存")
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = onCancel) {
                 Text("取消")
             }
-        },
-        title = { Text("添加人员") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("姓名") },
-                    singleLine = true
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("性别：")
-                    Spacer(Modifier.width(8.dp))
-                    FilterChip(
-                        selected = gender == "男",
-                        onClick = { gender = "男" },
-                        label = { Text("男") },
-                        leadingIcon = if (gender == "男") {
-                            { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
-                        } else null
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    FilterChip(
-                        selected = gender == "女",
-                        onClick = { gender = "女" },
-                        label = { Text("女") },
-                        leadingIcon = if (gender == "女") {
-                            { Icon(Icons.Filled.CheckCircle, contentDescription = null) }
-                        } else null
-                    )
-                }
-                OutlinedTextField(
-                    value = idNumber,
-                    onValueChange = { idNumber = it },
-                    label = { Text("身份证号") },
-                    singleLine = true
-                )
-                if (idNumber.isNotBlank()) {
-                    Text(
-                        if (birthDate.isNotEmpty()) "出生日期：$birthDate" else "身份证号格式不正确，无法解析出生日期",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (birthDate.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                    )
-                }
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
-                    label = { Text("手机号") },
-                    singleLine = true
-                )
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it },
-                    label = { Text("邮箱") },
-                    singleLine = true
-                )
-            }
         }
-    )
+    }
 }
 
 @Composable
