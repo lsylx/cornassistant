@@ -1,23 +1,42 @@
 package com.corn.manageapp.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.corn.manageapp.NfcReadResult
 import com.corn.manageapp.NfcWriteResult
+import com.corn.manageapp.data.PeopleRepository
+import com.corn.manageapp.data.Person
+import com.corn.manageapp.util.AvatarStorage
 import com.corn.manageapp.utils.VCardVerifier
+import kotlinx.coroutines.launch
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -31,6 +50,7 @@ import java.util.Locale
 @Composable
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
+    peopleRepository: PeopleRepository,
     onWriteRequest: (String, String, String, Boolean) -> Unit,
     onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
     onTagRead: ((NfcReadResult) -> Unit) -> Unit,
@@ -60,9 +80,13 @@ fun PeopleManagementScreen(
     var upgradeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
     // 人员管理
-    val people = remember { mutableStateListOf<Person>() }
+    val people by peopleRepository.peopleFlow.collectAsState(initial = emptyList())
     var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    var matchedPerson by remember { mutableStateOf<Person?>(null) }
+    var hasReadCard by remember { mutableStateOf(false) }
+    val currentPeople by rememberUpdatedState(people)
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
@@ -73,6 +97,7 @@ fun PeopleManagementScreen(
             upgradeStatus = status
         }
         onTagRead { res ->
+            hasReadCard = true
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
             // 从 vCard 找 NOTE 行
@@ -89,6 +114,7 @@ fun PeopleManagementScreen(
             lastCounter = res.nfcCounter
             lastVcard = res.vcard
             upgradeStatus = null
+            matchedPerson = findMatchingPerson(res.vcard, currentPeople)
             selectedTab = 1 // 自动切到“读取”
         }
     }
@@ -102,6 +128,18 @@ fun PeopleManagementScreen(
     val writeScrollState = rememberScrollState()
     val readScrollState = rememberScrollState()
     val peopleScrollState = rememberScrollState()
+
+    LaunchedEffect(people) {
+        detailPerson?.let { current ->
+            detailPerson = people.firstOrNull { it.id == current.id }
+        }
+        matchedPerson?.let { current ->
+            matchedPerson = people.firstOrNull { it.id == current.id }
+        }
+        if (matchedPerson == null && lastVcard.isNotEmpty()) {
+            matchedPerson = findMatchingPerson(lastVcard, people)
+        }
+    }
 
     Column(
         modifier = modifier
@@ -247,7 +285,7 @@ fun PeopleManagementScreen(
 
                         InfoLine("卡片 UID", lastUid.takeIf { it.isNotEmpty() })
                         InfoLine("门禁卡号（10位）", lastDoorNum.takeIf { it.isNotEmpty() })
-                        CounterInfo(lastCounter)
+                        CounterInfo(lastCounter, hasReadCard)
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text("验证结果：")
@@ -268,6 +306,17 @@ fun PeopleManagementScreen(
                                     Text("（请刷卡）")
                                 }
                             }
+                        }
+
+                        if (hasReadCard) {
+                            MatchedPersonSection(
+                                matchedPerson = matchedPerson,
+                                onOpenDetail = { person ->
+                                    isAddingPerson = false
+                                    detailPerson = person
+                                    selectedTab = 2
+                                }
+                            )
                         }
 
                         if (parsedLines.isNotEmpty()) {
@@ -327,56 +376,63 @@ fun PeopleManagementScreen(
 
                 // 人员
                 2 -> {
-                    if (isAddingPerson) {
-                        AddPersonPage(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            onCancel = { isAddingPerson = false },
-                            onSave = { person ->
-                                people.add(person)
-                                isAddingPerson = false
-                            }
-                        )
-                    } else {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(peopleScrollState)
-                                .padding(12.dp)
-                        ) {
-                            Text("人员列表", style = MaterialTheme.typography.titleMedium)
-                            Spacer(Modifier.height(12.dp))
-
-                            if (people.isEmpty()) {
-                                Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(16.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text("暂无人员，请点击下方按钮添加", style = MaterialTheme.typography.bodyMedium)
-                                    }
-                                }
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    people.forEach { person ->
-                                        PersonCard(person = person, onClick = { detailPerson = person })
-                                    }
-                                }
-                            }
-
-                            Spacer(Modifier.height(24.dp))
-
-                            Button(
-                                onClick = { isAddingPerson = true },
+                    when {
+                        detailPerson != null -> {
+                            PersonDetailPage(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = 12.dp)
-                            ) {
-                                Text("添加人员")
-                            }
+                                    .fillMaxSize()
+                                    .verticalScroll(peopleScrollState)
+                                    .padding(12.dp),
+                                person = detailPerson!!,
+                                onBack = { detailPerson = null },
+                                onFillWrite = {
+                                    detailPerson?.let { person ->
+                                        name = person.name
+                                        phone = person.phone
+                                        emailPrefix = person.email.substringBefore('@')
+                                    }
+                                    selectedTab = 0
+                                    detailPerson = null
+                                },
+                                onDelete = { person ->
+                                    coroutineScope.launch {
+                                        AvatarStorage.deleteAvatar(person.avatarPath)
+                                        peopleRepository.delete(person.id)
+                                    }
+                                    if (matchedPerson?.id == person.id) {
+                                        matchedPerson = null
+                                    }
+                                    detailPerson = null
+                                }
+                            )
+                        }
+
+                        isAddingPerson -> {
+                            AddPersonPage(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(peopleScrollState)
+                                    .padding(12.dp),
+                                onCancel = { isAddingPerson = false },
+                                onSave = { person ->
+                                    coroutineScope.launch {
+                                        peopleRepository.upsert(person)
+                                    }
+                                    isAddingPerson = false
+                                }
+                            )
+                        }
+
+                        else -> {
+                            PersonListPage(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .verticalScroll(peopleScrollState)
+                                    .padding(12.dp),
+                                people = people,
+                                onAdd = { isAddingPerson = true },
+                                onSelect = { person -> detailPerson = person }
+                            )
                         }
                     }
                 }
@@ -396,19 +452,6 @@ fun PeopleManagementScreen(
         }
     }
 
-    detailPerson?.let { person ->
-        PersonDetailDialog(
-            person = person,
-            onDismiss = { detailPerson = null },
-            onFillWrite = {
-                name = person.name
-                phone = person.phone
-                emailPrefix = person.email.substringBefore('@')
-                selectedTab = 0
-                detailPerson = null
-            }
-        )
-    }
 }
 
 /* ----------------- 小工具 & 解析 ----------------- */
@@ -428,7 +471,8 @@ private fun InfoLine(label: String, value: String?) {
 }
 
 @Composable
-private fun CounterInfo(counter: Int?) {
+private fun CounterInfo(counter: Int?, hasReadCard: Boolean) {
+    if (!hasReadCard) return
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -478,22 +522,78 @@ private fun calcDoorNum10(uidHex: String): String {
 /* ----------------- 人员管理 ----------------- */
 
 @Composable
+private fun PersonAvatarView(
+    avatarPath: String?,
+    name: String,
+    size: Dp,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val imageBitmap by produceState<ImageBitmap?>(initialValue = null, avatarPath) {
+        value = AvatarStorage.loadBitmap(context, avatarPath)?.asImageBitmap()
+    }
+    Surface(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape),
+        tonalElevation = 2.dp,
+        color = if (imageBitmap == null) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+        shape = CircleShape
+    ) {
+        if (imageBitmap != null) {
+            Image(
+                bitmap = imageBitmap!!,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.secondaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = name.takeIf { it.isNotBlank() }?.take(2) ?: "头像",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun PersonCard(person: Person, onClick: () -> Unit) {
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors()
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Text("${person.name} (${person.gender})", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(4.dp))
-            Text("身份证：${person.idNumber}", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(2.dp))
-            Text("出生日期：${person.birthDate}", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(2.dp))
-            Text("手机号：${person.phone}", style = MaterialTheme.typography.bodySmall)
-            Spacer(Modifier.height(2.dp))
-            Text("邮箱：${person.email}", style = MaterialTheme.typography.bodySmall)
+        Row(
+            modifier = Modifier
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            PersonAvatarView(
+                avatarPath = person.avatarPath,
+                name = person.name,
+                size = 56.dp
+            )
+            Spacer(Modifier.width(16.dp))
+            Column {
+                Text("${person.name} (${person.gender})", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(4.dp))
+                Text("身份证：${person.idNumber}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(2.dp))
+                Text("出生日期：${person.birthDate}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(2.dp))
+                Text("手机号：${person.phone}", style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(2.dp))
+                Text("邮箱：${person.email}", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
@@ -509,17 +609,24 @@ private fun AddPersonPage(
     var idNumber by rememberSaveable { mutableStateOf("") }
     var phone by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
+    var avatarPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     val birthDate = remember(idNumber) { extractBirthDate(idNumber) }
     val isValid = name.isNotBlank() && phone.isNotBlank() && email.isNotBlank() && birthDate.isNotEmpty()
-    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
 
     Column(
-        modifier = modifier.verticalScroll(scrollState),
+        modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("添加人员", style = MaterialTheme.typography.titleMedium)
         Text("请填写人员信息，保存后将出现在人员列表中。", style = MaterialTheme.typography.bodySmall)
+
+        AvatarPicker(
+            avatarPath = avatarPath,
+            onAvatarChanged = { avatarPath = it },
+            displayName = name
+        )
 
         OutlinedTextField(
             value = name,
@@ -597,14 +704,21 @@ private fun AddPersonPage(
                             idNumber = idNumber.trim(),
                             birthDate = birthDate,
                             phone = phone.trim(),
-                            email = email.trim()
+                            email = email.trim(),
+                            avatarPath = avatarPath
                         )
                     )
                 }
             }, enabled = isValid) {
                 Text("保存")
             }
-            TextButton(onClick = onCancel) {
+            TextButton(onClick = {
+                scope.launch {
+                    AvatarStorage.deleteAvatar(avatarPath)
+                    avatarPath = null
+                    onCancel()
+                }
+            }) {
                 Text("取消")
             }
         }
@@ -612,31 +726,94 @@ private fun AddPersonPage(
 }
 
 @Composable
-private fun PersonDetailDialog(person: Person, onDismiss: () -> Unit, onFillWrite: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = {
-            TextButton(onClick = onFillWrite) {
-                Text("填入写卡页面")
+private fun PersonListPage(
+    modifier: Modifier = Modifier,
+    people: List<Person>,
+    onAdd: () -> Unit,
+    onSelect: (Person) -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("人员列表", style = MaterialTheme.typography.titleMedium)
+        if (people.isEmpty()) {
+            Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("暂无人员，请点击下方按钮添加", style = MaterialTheme.typography.bodyMedium)
+                }
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("关闭")
-            }
-        },
-        title = { Text("人员详情") },
-        text = {
+        } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DetailLine("姓名", person.name)
-                DetailLine("性别", person.gender)
-                DetailLine("身份证号", person.idNumber)
-                DetailLine("出生日期", person.birthDate)
-                DetailLine("手机号", person.phone)
-                DetailLine("邮箱", person.email)
+                people.forEach { person ->
+                    PersonCard(person = person, onClick = { onSelect(person) })
+                }
             }
         }
-    )
+
+        Spacer(Modifier.height(12.dp))
+
+        Button(
+            onClick = onAdd,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("添加人员")
+        }
+    }
+}
+
+@Composable
+private fun PersonDetailPage(
+    modifier: Modifier = Modifier,
+    person: Person,
+    onBack: () -> Unit,
+    onFillWrite: () -> Unit,
+    onDelete: (Person) -> Unit
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("人员详情", style = MaterialTheme.typography.titleMedium)
+        PersonAvatarView(
+            avatarPath = person.avatarPath,
+            name = person.name,
+            size = 96.dp
+        )
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            DetailLine("姓名", person.name)
+            DetailLine("性别", person.gender)
+            DetailLine("身份证号", person.idNumber)
+            DetailLine("出生日期", person.birthDate)
+            DetailLine("手机号", person.phone)
+            DetailLine("邮箱", person.email)
+        }
+
+        Button(onClick = onFillWrite, modifier = Modifier.fillMaxWidth()) {
+            Text("填入写卡页面")
+        }
+
+        OutlinedButton(
+            onClick = { onDelete(person) },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+        ) {
+            Text("删除人员")
+        }
+
+        TextButton(onClick = onBack) {
+            Text("返回列表")
+        }
+    }
 }
 
 @Composable
@@ -648,14 +825,111 @@ private fun DetailLine(label: String, value: String) {
     }
 }
 
-private data class Person(
-    val name: String,
-    val gender: String,
-    val idNumber: String,
-    val birthDate: String,
-    val phone: String,
-    val email: String
-)
+@Composable
+private fun AvatarPicker(
+    avatarPath: String?,
+    onAvatarChanged: (String?) -> Unit,
+    displayName: String = ""
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val takePictureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) {
+            scope.launch {
+                val path = AvatarStorage.saveBitmap(context, bitmap)
+                if (path != null) {
+                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
+                    onAvatarChanged(path)
+                }
+            }
+        }
+    }
+    val pickImageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val path = AvatarStorage.copyFromUri(context, uri)
+                if (path != null) {
+                    avatarPath?.let { AvatarStorage.deleteAvatar(it) }
+                    onAvatarChanged(path)
+                }
+            }
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        PersonAvatarView(
+            avatarPath = avatarPath,
+            name = displayName,
+            size = 88.dp
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedButton(onClick = { takePictureLauncher.launch(null) }) {
+                Text("拍照上传")
+            }
+            OutlinedButton(onClick = { pickImageLauncher.launch("image/*") }) {
+                Text("本地选择")
+            }
+        }
+        if (avatarPath != null) {
+            TextButton(onClick = {
+                scope.launch {
+                    AvatarStorage.deleteAvatar(avatarPath)
+                    onAvatarChanged(null)
+                }
+            }) {
+                Text("移除头像")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MatchedPersonSection(
+    matchedPerson: Person?,
+    onOpenDetail: ((Person) -> Unit)? = null
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Divider()
+        Text("人员数据库匹配", style = MaterialTheme.typography.titleSmall)
+        if (matchedPerson != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                PersonAvatarView(
+                    avatarPath = matchedPerson.avatarPath,
+                    name = matchedPerson.name,
+                    size = 64.dp
+                )
+                Column(Modifier.weight(1f)) {
+                    Text(matchedPerson.name, style = MaterialTheme.typography.titleMedium)
+                    Text(matchedPerson.phone, style = MaterialTheme.typography.bodySmall)
+                    Text(matchedPerson.email, style = MaterialTheme.typography.bodySmall)
+                }
+                if (onOpenDetail != null) {
+                    TextButton(onClick = { onOpenDetail(matchedPerson) }) {
+                        Text("查看")
+                    }
+                }
+            }
+        } else {
+            Text(
+                "未在人员数据库中找到匹配信息",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+    }
+}
 
 private fun extractBirthDate(idNumber: String): String {
     val clean = idNumber.trim()
@@ -680,4 +954,38 @@ private fun parseDate(raw: String): String {
     } catch (_: ParseException) {
         ""
     }
+}
+
+private fun findMatchingPerson(vcard: String, people: List<Person>): Person? {
+    if (vcard.isBlank() || people.isEmpty()) return null
+    val fields = parseVCardFields(vcard)
+    val email = fields["EMAIL"]?.lowercase(Locale.getDefault())
+    val phone = fields["TEL"]?.normalizedPhone()
+    val name = fields["FN"]?.trim()
+    return people.firstOrNull { person ->
+        val matchEmail = email != null && person.email.lowercase(Locale.getDefault()) == email
+        val matchPhone = phone != null && person.phone.normalizedPhone() == phone
+        val matchName = name != null && person.name.equals(name, ignoreCase = true)
+        matchEmail || matchPhone || matchName
+    }
+}
+
+private fun parseVCardFields(vcard: String): Map<String, String> {
+    val map = mutableMapOf<String, String>()
+    val lines = vcard.replace("\r\n", "\n").split("\n")
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) continue
+        val parts = trimmed.split(':', limit = 2)
+        if (parts.size == 2) {
+            val key = parts[0].substringBefore(';').uppercase(Locale.getDefault())
+            val value = parts[1].trim()
+            map[key] = value
+        }
+    }
+    return map
+}
+
+private fun String.normalizedPhone(): String {
+    return filter { it.isDigit() }
 }
