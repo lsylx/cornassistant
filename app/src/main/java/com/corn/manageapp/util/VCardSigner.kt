@@ -2,7 +2,6 @@ package com.corn.manageapp.utils
 
 import android.content.Context
 import android.util.Base64
-import java.nio.charset.StandardCharsets
 
 object VCardSigner {
     /**
@@ -19,12 +18,7 @@ object VCardSigner {
         email: String,
         uidHex: String
     ): String? {
-        // 读取私钥（解密得到 privateBase64）
-        val privateBase64 = KeyStoreHelper.loadEncryptedPrivate(context) ?: return null
-        val uidBytes = hexToByteArray(uidHex)
-        val sig = Ed25519Utils.signBase64Private(privateBase64, uidBytes)
-        val sigB64 = Base64.encodeToString(sig, Base64.NO_WRAP)
-        val note = "UID=$uidHex;SIG=$sigB64;ALG=ED25519;VER=1"
+        val note = buildSignedNote(context, uidHex) ?: return null
 
         return buildString {
             appendLine("BEGIN:VCARD")
@@ -36,6 +30,69 @@ object VCardSigner {
             appendLine("NOTE:$note")
             appendLine("END:VCARD")
         }
+    }
+
+    fun buildSignedNote(context: Context, uidHex: String): String? {
+        val privateBase64 = KeyStoreHelper.loadEncryptedPrivate(context) ?: return null
+        val uidBytes = hexToByteArray(uidHex)
+        val sig = Ed25519Utils.signBase64Private(privateBase64, uidBytes)
+        val sigB64 = Base64.encodeToString(sig, Base64.NO_WRAP)
+        return "UID=$uidHex;SIG=$sigB64;ALG=ED25519;VER=1"
+    }
+
+    fun injectSignedNote(context: Context, originalVcard: String, uidHex: String): String? {
+        val note = buildSignedNote(context, uidHex) ?: return null
+        val newline = if (originalVcard.contains("\r\n")) "\r\n" else "\n"
+        val normalized = originalVcard.replace("\r\n", "\n")
+        val lines = normalized.split('\n')
+        if (lines.isEmpty()) return "NOTE:$note"
+
+        val rebuilt = mutableListOf<String>()
+        var noteInserted = false
+        var endInserted = false
+
+        for (line in lines) {
+            when {
+                line.isEmpty() && rebuilt.isEmpty() -> {
+                    // Preserve leading empties if any
+                    rebuilt.add(line)
+                }
+                line.equals("END:VCARD", ignoreCase = true) -> {
+                    if (!noteInserted) {
+                        rebuilt.add("NOTE:$note")
+                        noteInserted = true
+                    }
+                    rebuilt.add(line)
+                    endInserted = true
+                }
+                line.startsWith("NOTE:", ignoreCase = true) -> {
+                    if (!noteInserted) {
+                        rebuilt.add("NOTE:$note")
+                        noteInserted = true
+                    }
+                    // Skip original NOTE lines
+                }
+                else -> rebuilt.add(line)
+            }
+        }
+
+        if (!noteInserted) {
+            if (endInserted) {
+                val endIndex = rebuilt.indexOfLast { it.equals("END:VCARD", ignoreCase = true) }
+                if (endIndex >= 0) {
+                    rebuilt.add(endIndex, "NOTE:$note")
+                    noteInserted = true
+                }
+            }
+        }
+
+        if (!noteInserted) {
+            rebuilt.add("NOTE:$note")
+        }
+
+        val result = rebuilt.joinToString(newline)
+        val needsTrailingNewline = originalVcard.endsWith("\n") || originalVcard.endsWith("\r\n")
+        return if (needsTrailingNewline) result + newline else result
     }
 
     private fun hexToByteArray(s: String): ByteArray {
