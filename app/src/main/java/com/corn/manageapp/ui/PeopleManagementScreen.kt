@@ -202,8 +202,8 @@ fun PeopleManagementScreen(
                         Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
                                 Text("最近写卡成功", style = MaterialTheme.typography.titleSmall)
-                                Text("UID：${writeStatus.uidHex}", style = MaterialTheme.typography.bodySmall)
-                                val door = calcDoorNum10(writeStatus.uidHex)
+                                Text("UID：${(writeStatus as NfcWriteResult.Success).uidHex}", style = MaterialTheme.typography.bodySmall)
+                                val door = calcDoorNum10((writeStatus as NfcWriteResult.Success).uidHex)
                                 if (door.isNotEmpty()) {
                                     Text("门禁号：$door", style = MaterialTheme.typography.bodySmall)
                                 }
