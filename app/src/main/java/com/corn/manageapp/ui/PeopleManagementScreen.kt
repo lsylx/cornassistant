@@ -10,6 +10,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -56,7 +57,41 @@ fun PeopleManagementScreen(
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
     // 人员管理
-    val people = remember { mutableStateListOf<Person>() }
+    val peopleSaver = remember {
+        listSaver<Person, List<String>>(
+            save = { list ->
+                list.map { person ->
+                    listOf(
+                        person.name,
+                        person.gender,
+                        person.idNumber,
+                        person.birthDate,
+                        person.phone,
+                        person.email
+                    )
+                }
+            },
+            restore = { stored ->
+                mutableStateListOf<Person>().apply {
+                    stored.forEach { entry ->
+                        if (entry.size == 6) {
+                            add(
+                                Person(
+                                    name = entry[0],
+                                    gender = entry[1],
+                                    idNumber = entry[2],
+                                    birthDate = entry[3],
+                                    phone = entry[4],
+                                    email = entry[5]
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        )
+    }
+    val people = rememberSaveable(saver = peopleSaver) { mutableStateListOf<Person>() }
     var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
 

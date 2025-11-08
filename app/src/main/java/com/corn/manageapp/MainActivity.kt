@@ -293,28 +293,19 @@ class MainActivity : ComponentActivity() {
             ultralight.connect()
             val raw = ultralight.readPages(configPage)
 
-            val pageConfig = raw.copyOfRange(0, 4)
             val pageAccess = raw.copyOfRange(4, 8)
 
-            // Byte0：NC_REG；Bit0 置位后可允许计数器在 RF 接口下使用
-            val ncReg = pageConfig[0].toInt() and 0xFF
-            val updatedNcReg = ncReg or 0x01
-            if (updatedNcReg != ncReg) {
-                pageConfig[0] = updatedNcReg.toByte()
-                ultralight.writePage(configPage, pageConfig)
-            }
-
-            // Byte7（即 ACCESS 字节）Bit5：NFC counter enable
-            val access = pageAccess[3].toInt() and 0xFF
-            val counterEnabled = (access and 0x20) != 0
-            val updatedAccess = access or 0x20
+            // ACCESS 字节位于配置页的第 5 个字节（表格 Byte0 of page 0x2A）
+            val access = pageAccess[0].toInt() and 0xFF
+            val counterEnabled = (access and 0x10) != 0
+            val updatedAccess = access or 0x10
             if (!counterEnabled) {
-                pageAccess[3] = updatedAccess.toByte()
+                pageAccess[0] = updatedAccess.toByte()
                 ultralight.writePage(configPage + 1, pageAccess)
             }
 
             val finalAccess = if (counterEnabled) access else updatedAccess
-            CounterEnableResult(tagType, (finalAccess and 0x20) != 0)
+            CounterEnableResult(tagType, (finalAccess and 0x10) != 0)
         } catch (_: Exception) {
             CounterEnableResult(tagType, false)
         } finally {
