@@ -44,6 +44,10 @@ import java.util.Locale
 enum class AppDestinations(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Filled.Home),
     PEOPLE("人员管理", Icons.Filled.Person),
+    PEOPLE_WRITE("写入门禁卡", Icons.Filled.Person),
+    PEOPLE_READ("读取门禁卡", Icons.Filled.Person),
+    PEOPLE_LIST("人员信息", Icons.Filled.Person),
+    PEOPLE_ACCESS("门禁管理", Icons.Filled.Person),
     INVENTORY("机房管理", Icons.Filled.ShoppingCart),
     SETTINGS("设置", Icons.Filled.Settings),
     INVENTORY_QUERY("查询服务器", Icons.Filled.ShoppingCart),
@@ -82,6 +86,12 @@ class MainActivity : ComponentActivity() {
             MyApplicationTheme {
                 var current by rememberSaveable { mutableStateOf(AppDestinations.HOME) }
                 var detailItem by remember { mutableStateOf<HardwareItem?>(null) }
+                val peopleState = rememberPeopleManagementState()
+                val navigateToRead: () -> Unit = {
+                    if (current != AppDestinations.PEOPLE_READ) {
+                        current = AppDestinations.PEOPLE_READ
+                    }
+                }
 
                 NavigationSuiteScaffold(
                     navigationSuiteItems = {
@@ -91,10 +101,30 @@ class MainActivity : ComponentActivity() {
                             AppDestinations.INVENTORY,
                             AppDestinations.SETTINGS
                         ).forEach { item ->
+                            val isSelected = when (item) {
+                                AppDestinations.PEOPLE -> current in setOf(
+                                    AppDestinations.PEOPLE,
+                                    AppDestinations.PEOPLE_WRITE,
+                                    AppDestinations.PEOPLE_READ,
+                                    AppDestinations.PEOPLE_LIST,
+                                    AppDestinations.PEOPLE_ACCESS
+                                )
+                                AppDestinations.INVENTORY -> current in setOf(
+                                    AppDestinations.INVENTORY,
+                                    AppDestinations.INVENTORY_QUERY,
+                                    AppDestinations.DETAIL
+                                )
+                                AppDestinations.SETTINGS -> current in setOf(
+                                    AppDestinations.SETTINGS,
+                                    AppDestinations.SETTINGS_DCIM,
+                                    AppDestinations.SETTINGS_KEYS
+                                )
+                                else -> current == item
+                            }
                             item(
                                 icon = { Icon(item.icon, item.label) },
                                 label = { Text(item.label) },
-                                selected = current == item,
+                                selected = isSelected,
                                 onClick = { current = item }
                             )
                         }
@@ -105,10 +135,26 @@ class MainActivity : ComponentActivity() {
                             AppDestinations.HOME ->
                                 Greeting("COMCORN Cloud", Modifier.padding(inner))
 
-                            /** ✅ 人员管理：新版签名/验证接口 */
+                            /** ✅ 人员管理入口 */
                             AppDestinations.PEOPLE ->
-                                PeopleManagementScreen(
+                                PeopleManagementMenu(
                                     modifier = Modifier.padding(inner),
+                                    state = peopleState,
+                                    onOpenWrite = { current = AppDestinations.PEOPLE_WRITE },
+                                    onOpenRead = { current = AppDestinations.PEOPLE_READ },
+                                    onOpenPeople = { current = AppDestinations.PEOPLE_LIST },
+                                    onOpenAccess = { current = AppDestinations.PEOPLE_ACCESS },
+                                    onWriteStatus = { cb -> onTagWriteCallback = cb },
+                                    onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb },
+                                    onNavigateToRead = navigateToRead
+                                )
+
+                            AppDestinations.PEOPLE_WRITE ->
+                                PeopleWriteScreen(
+                                    modifier = Modifier.padding(inner),
+                                    state = peopleState,
+                                    onBack = { current = AppDestinations.PEOPLE },
                                     onWriteRequest = { name, phone, emailPrefix, enableCounter ->
                                         pendingUpgradeRequest = null
                                         pendingWriteRequest = PendingWriteRequest(name, phone, emailPrefix, enableCounter)
@@ -116,12 +162,47 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onWriteStatus = { cb -> onTagWriteCallback = cb },
                                     onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb },
+                                    onNavigateToRead = navigateToRead
+                                )
+
+                            AppDestinations.PEOPLE_READ ->
+                                PeopleReadScreen(
+                                    modifier = Modifier.padding(inner),
+                                    state = peopleState,
+                                    onBack = { current = AppDestinations.PEOPLE },
                                     onUpgradeRequest = { uidHex, originalVcard ->
                                         pendingWriteRequest = null
                                         pendingUpgradeRequest = PendingUpgradeRequest(uidHex, originalVcard)
                                         onUpgradeStatusCallback?.invoke(NfcWriteResult.Waiting)
                                     },
-                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb }
+                                    onWriteStatus = { cb -> onTagWriteCallback = cb },
+                                    onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb },
+                                    onNavigateToRead = navigateToRead
+                                )
+
+                            AppDestinations.PEOPLE_LIST ->
+                                PeopleListScreen(
+                                    modifier = Modifier.padding(inner),
+                                    state = peopleState,
+                                    onBack = { current = AppDestinations.PEOPLE },
+                                    onOpenWrite = { current = AppDestinations.PEOPLE_WRITE },
+                                    onWriteStatus = { cb -> onTagWriteCallback = cb },
+                                    onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb },
+                                    onNavigateToRead = navigateToRead
+                                )
+
+                            AppDestinations.PEOPLE_ACCESS ->
+                                PeopleAccessScreen(
+                                    modifier = Modifier.padding(inner),
+                                    state = peopleState,
+                                    onBack = { current = AppDestinations.PEOPLE },
+                                    onWriteStatus = { cb -> onTagWriteCallback = cb },
+                                    onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb },
+                                    onNavigateToRead = navigateToRead
                                 )
 
                             AppDestinations.INVENTORY ->
@@ -357,9 +438,10 @@ class MainActivity : ComponentActivity() {
                     null
                 }
                 if (response != null && response.size >= 3) {
-                    return (response[0].toInt() and 0xFF shl 16) or
-                        (response[1].toInt() and 0xFF shl 8) or
-                        (response[2].toInt() and 0xFF)
+                    val b0 = response[0].toInt() and 0xFF
+                    val b1 = response[1].toInt() and 0xFF
+                    val b2 = response[2].toInt() and 0xFF
+                    return b0 or (b1 shl 8) or (b2 shl 16)
                 }
             }
             null
