@@ -1,10 +1,14 @@
 package com.corn.manageapp.ui
 
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +22,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,7 +40,10 @@ import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.data.PeopleRepository
 import com.corn.manageapp.data.Person
 import com.corn.manageapp.util.AvatarStorage
+import com.corn.manageapp.utils.VCardSigner
 import com.corn.manageapp.utils.VCardVerifier
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import java.text.ParseException
 import java.text.SimpleDateFormat
@@ -46,7 +54,7 @@ import java.util.Locale
  * - 写入：仅收集 name/phone/emailPrefix，实际写卡在 MainActivity 中完成（使用私钥签名 UID）
  * - 读取：收到 UID + vCard，解析 NOTE 验真伪、显示 UID 和 10位门禁卡号
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
@@ -61,6 +69,7 @@ fun PeopleManagementScreen(
 
     val tabs = listOf("写入", "读取", "人员", "门禁")
     var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val pagerState = rememberPagerState(initialPage = 0, pageCount = { tabs.size })
 
     // 写入表单
     var name by rememberSaveable { mutableStateOf("") }
@@ -83,10 +92,15 @@ fun PeopleManagementScreen(
     val people by peopleRepository.peopleFlow.collectAsState(initial = emptyList())
     var isAddingPerson by remember { mutableStateOf(false) }
     var detailPerson by remember { mutableStateOf<Person?>(null) }
-    val coroutineScope = rememberCoroutineScope()
+    val repoScope = rememberCoroutineScope()
     var matchedPerson by remember { mutableStateOf<Person?>(null) }
     var hasReadCard by remember { mutableStateOf(false) }
     val currentPeople by rememberUpdatedState(people)
+
+    val tabScrollState = rememberScrollState()
+    val writeScrollState = rememberScrollState()
+    val readScrollState = rememberScrollState()
+    val peopleScrollState = rememberScrollState()
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
@@ -100,7 +114,6 @@ fun PeopleManagementScreen(
             hasReadCard = true
             lastUid = res.uidHex
             lastDoorNum = calcDoorNum10(res.uidHex)
-            // 从 vCard 找 NOTE 行
             val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
                 ?.substringAfter("NOTE:", "")
                 ?.trim()
@@ -115,19 +128,9 @@ fun PeopleManagementScreen(
             lastVcard = res.vcard
             upgradeStatus = null
             matchedPerson = findMatchingPerson(res.vcard, currentPeople)
-            selectedTab = 1 // 自动切到“读取”
+            selectedTab = 1
         }
     }
-
-    LaunchedEffect(writeStatus) {
-        if (writeStatus != null && selectedTab != 0) {
-            selectedTab = 0
-        }
-    }
-
-    val writeScrollState = rememberScrollState()
-    val readScrollState = rememberScrollState()
-    val peopleScrollState = rememberScrollState()
 
     LaunchedEffect(people) {
         detailPerson?.let { current ->
@@ -141,38 +144,83 @@ fun PeopleManagementScreen(
         }
     }
 
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != pagerState.currentPage) {
+            pagerState.animateScrollToPage(selectedTab)
+        }
+    }
+
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }
+            .distinctUntilChanged()
+            .collectLatest { page ->
+                if (page != selectedTab) {
+                    selectedTab = page
+                }
+            }
+    }
+
+    LaunchedEffect(writeStatus) {
+        if (writeStatus != null && selectedTab != 0) {
+            selectedTab = 0
+        }
+        if (writeStatus is NfcWriteResult.Success) {
+            Toast.makeText(ctx, "写卡成功", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    LaunchedEffect(upgradeStatus) {
+        when (val status = upgradeStatus) {
+            is NfcWriteResult.Success -> {
+                Toast.makeText(ctx, "升级完成", Toast.LENGTH_SHORT).show()
+                if (lastVcard.isNotEmpty() && lastUid.isNotEmpty()) {
+                    VCardSigner.injectSignedNote(ctx, lastVcard, lastUid)?.let { updated ->
+                        lastVcard = updated
+                        parsedLines = parseVCard(updated)
+                    }
+                }
+                hasNoteSignature = true
+                verifyOk = true
+            }
+            else -> Unit
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        Text("人员管理", style = MaterialTheme.typography.titleLarge)
-        Spacer(Modifier.height(12.dp))
-        TabRow(selectedTabIndex = selectedTab) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(tabScrollState),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             tabs.forEachIndexed { index, title ->
-                Tab(
+                FilterChip(
                     selected = selectedTab == index,
                     onClick = { selectedTab = index },
-                    text = { Text(title) }
+                    label = { Text(title) }
                 )
             }
         }
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(8.dp))
 
-        Box(
+        HorizontalPager(
+            state = pagerState,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f, fill = true)
-        ) {
-            when (selectedTab) {
-                // 写入
+                .weight(1f)
+        ) { page ->
+            when (page) {
                 0 -> {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(writeScrollState)
-                            .padding(12.dp),
+                            .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
@@ -213,7 +261,6 @@ fun PeopleManagementScreen(
                                 val p = phone.trim()
                                 val e = emailPrefix.trim()
                                 if (n.isEmpty() || p.isEmpty() || e.isEmpty()) return@Button
-                                // 通知 Activity：等待贴卡，届时会读取 UID 并进行签名写卡
                                 onWriteRequest(n, p, e, enableCounter)
                             },
                             modifier = Modifier.fillMaxWidth(),
@@ -222,7 +269,6 @@ fun PeopleManagementScreen(
                             Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
                         }
 
-                        // 预览（纯文本预览，不含 NOTE）
                         val preview = buildString {
                             appendLine("BEGIN:VCARD")
                             appendLine("VERSION:3.0")
@@ -272,13 +318,12 @@ fun PeopleManagementScreen(
                     }
                 }
 
-                // 读取
                 1 -> {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(readScrollState)
-                            .padding(12.dp),
+                            .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
@@ -328,7 +373,7 @@ fun PeopleManagementScreen(
                             Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
                         }
 
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(12.dp))
 
                         val canUpgrade = lastUid.isNotEmpty() && lastVcard.isNotEmpty()
                         Button(
@@ -374,7 +419,6 @@ fun PeopleManagementScreen(
                     }
                 }
 
-                // 人员
                 2 -> {
                     when {
                         detailPerson != null -> {
@@ -382,7 +426,7 @@ fun PeopleManagementScreen(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .verticalScroll(peopleScrollState)
-                                    .padding(12.dp),
+                                    .padding(8.dp),
                                 person = detailPerson!!,
                                 onBack = { detailPerson = null },
                                 onFillWrite = {
@@ -395,7 +439,7 @@ fun PeopleManagementScreen(
                                     detailPerson = null
                                 },
                                 onDelete = { person ->
-                                    coroutineScope.launch {
+                                    repoScope.launch {
                                         AvatarStorage.deleteAvatar(person.avatarPath)
                                         peopleRepository.delete(person.id)
                                     }
@@ -412,10 +456,10 @@ fun PeopleManagementScreen(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .verticalScroll(peopleScrollState)
-                                    .padding(12.dp),
+                                    .padding(8.dp),
                                 onCancel = { isAddingPerson = false },
                                 onSave = { person ->
-                                    coroutineScope.launch {
+                                    repoScope.launch {
                                         peopleRepository.upsert(person)
                                     }
                                     isAddingPerson = false
@@ -428,7 +472,7 @@ fun PeopleManagementScreen(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .verticalScroll(peopleScrollState)
-                                    .padding(12.dp),
+                                    .padding(8.dp),
                                 people = people,
                                 onAdd = { isAddingPerson = true },
                                 onSelect = { person -> detailPerson = person }
@@ -437,12 +481,11 @@ fun PeopleManagementScreen(
                     }
                 }
 
-                // 门禁
                 3 -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(12.dp),
+                            .padding(8.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("门禁管理（可扩展）", style = MaterialTheme.typography.bodyMedium)
@@ -451,7 +494,6 @@ fun PeopleManagementScreen(
             }
         }
     }
-
 }
 
 /* ----------------- 小工具 & 解析 ----------------- */

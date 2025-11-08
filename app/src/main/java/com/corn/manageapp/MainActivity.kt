@@ -359,9 +359,10 @@ class MainActivity : ComponentActivity() {
                     null
                 }
                 if (response != null && response.size >= 3) {
-                    return (response[0].toInt() and 0xFF shl 16) or
-                        (response[1].toInt() and 0xFF shl 8) or
-                        (response[2].toInt() and 0xFF)
+                    val b0 = (response[0].toInt() and 0xFF) shl 16
+                    val b1 = (response[1].toInt() and 0xFF) shl 8
+                    val b2 = (response[2].toInt() and 0xFF)
+                    return b0 or b1 or b2
                 }
             }
             null
