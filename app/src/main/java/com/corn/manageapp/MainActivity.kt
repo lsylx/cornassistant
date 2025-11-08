@@ -104,7 +104,7 @@ class MainActivity : ComponentActivity() {
                     Scaffold { inner ->
                         when (current) {
                             AppDestinations.HOME ->
-                                Greeting("COMCORN Cloud", Modifier.padding(inner))
+                                Greeting(Modifier.padding(inner))
 
                             /** ✅ 人员管理：新版签名/验证接口 */
                             AppDestinations.PEOPLE ->
@@ -226,31 +226,41 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // ✅ 读卡：读取全部 NDEF 文本，回传给 UI（携带 UID）
+        // ✅ 读卡：读取全部 NDEF 文本，回传给 UI（携带 UID 与卡片类型）
+        var vcardText = ""
+        var counter: Int? = null
+        val tagType = detectTagType(tag)
         tag?.let { t ->
             val ndef = Ndef.get(t)
             if (ndef != null) {
                 try {
                     ndef.connect()
                     val msg = ndef.ndefMessage
-                    ndef.close()
                     val sb = StringBuilder()
                     msg?.records?.forEach { rec ->
                         sb.append(rec.toDecodedText())
                     }
-                    val counter = readNtagCounter(tag)
-                    onTagReadCallback?.invoke(
-                        NfcReadResult(
-                            uidHex = uidHex,
-                            vcard = sb.toString(),
-                            nfcCounter = counter
-                        )
-                    )
+                    vcardText = sb.toString()
                 } catch (_: Exception) {
                     // ignore
+                } finally {
+                    try {
+                        ndef.close()
+                    } catch (_: Exception) {
+                    }
                 }
             }
+            counter = readNtagCounter(t)
         }
+
+        onTagReadCallback?.invoke(
+            NfcReadResult(
+                uidHex = uidHex,
+                tagType = tagType,
+                vcard = vcardText,
+                nfcCounter = counter
+            )
+        )
     }
 
     private fun writeNfcTag(tag: Tag, data: String, uidHex: String, enableCounter: Boolean): NfcWriteResult {
@@ -395,6 +405,7 @@ private fun NdefRecord.toDecodedText(): String {
 /** ✅ 读取回调数据模型：UID + vCard 原文 */
 data class NfcReadResult(
     val uidHex: String,
+    val tagType: String,
     val vcard: String,
     val nfcCounter: Int?
 )
@@ -465,7 +476,7 @@ fun SettingsScreen(
 }
 
 @Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
+fun Greeting(modifier: Modifier = Modifier) {
     val scrollState = rememberScrollState()
     Box(
         modifier
@@ -473,6 +484,30 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
             .verticalScroll(scrollState),
         contentAlignment = Alignment.Center
     ) {
-        Text("Welcome to $name!", style = MaterialTheme.typography.titleLarge)
+        Text("欢迎使用裕米小助手", style = MaterialTheme.typography.titleLarge)
+    }
+}
+
+private fun detectTagType(tag: Tag?): String {
+    if (tag == null) return "未知卡片"
+    val techs = tag.techList?.toList().orEmpty()
+    return when {
+        techs.any { it.contains("MifareClassic", ignoreCase = true) } -> "Mifare Classic"
+        techs.any { it.contains("MifareUltralight", ignoreCase = true) } -> {
+            val type = MifareUltralight.get(tag)?.type
+            when (type) {
+                MifareUltralight.TYPE_ULTRALIGHT_C -> "NTAG Ultralight C"
+                MifareUltralight.TYPE_ULTRALIGHT -> "NTAG"
+                MifareUltralight.TYPE_UNKNOWN -> "NTAG"
+                else -> "NTAG"
+            }
+        }
+        techs.any { it.contains("IsoDep", ignoreCase = true) } -> {
+            val sak = NfcA.get(tag)?.sak?.toInt() ?: 0
+            if ((sak and 0x20) != 0) "Desfire" else "CPU卡"
+        }
+        techs.any { it.contains("NfcV", ignoreCase = true) } -> "NFC-V"
+        techs.any { it.contains("NfcF", ignoreCase = true) } -> "FeliCa"
+        else -> techs.joinToString("/") { it.substringAfterLast('.') }.ifBlank { "未知卡片" }
     }
 }
