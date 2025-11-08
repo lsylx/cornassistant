@@ -118,9 +118,9 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onWriteStatus = { cb -> onTagWriteCallback = cb },
                                     onTagRead = { cb -> onTagReadCallback = cb },
-                                    onUpgradeRequest = { uidHex, originalVcard ->
+                                    onUpgradeRequest = { uidHex, upgradedVcard ->
                                         pendingWriteRequest = null
-                                        pendingUpgradeRequest = PendingUpgradeRequest(uidHex, originalVcard)
+                                        pendingUpgradeRequest = PendingUpgradeRequest(uidHex, upgradedVcard)
                                         onUpgradeStatusCallback?.invoke(NfcWriteResult.Waiting)
                                     },
                                     onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb }
@@ -215,15 +215,11 @@ class MainActivity : ComponentActivity() {
 
         pendingUpgradeRequest?.let { request ->
             val tagObj = tag
-            val upgraded = VCardSigner.injectSignedNote(
-                context = this,
-                originalVcard = request.originalVcard,
-                uidHex = request.uidHex
-            )
+            val patched = request.patchedVcard
             val result = when {
                 tagObj == null -> NfcWriteResult.Failure("❌ 升级失败：未识别到 NFC 卡片")
-                upgraded == null -> NfcWriteResult.Failure("❌ 升级失败：请先在密钥管理中配置公私钥")
-                else -> writeNfcTag(tagObj, upgraded, request.uidHex, enableCounter = false)
+                patched.isBlank() -> NfcWriteResult.Failure("❌ 升级失败：无效的 vCard 数据")
+                else -> writeNfcTag(tagObj, patched, request.uidHex, enableCounter = false)
             }
             pendingUpgradeRequest = null
             onUpgradeStatusCallback?.invoke(result)
@@ -359,9 +355,10 @@ class MainActivity : ComponentActivity() {
                     null
                 }
                 if (response != null && response.size >= 3) {
-                    return (response[0].toInt() and 0xFF shl 16) or
-                        (response[1].toInt() and 0xFF shl 8) or
-                        (response[2].toInt() and 0xFF)
+                    val value = (response[0].toInt() and 0xFF) or
+                        ((response[1].toInt() and 0xFF) shl 8) or
+                        ((response[2].toInt() and 0xFF) shl 16)
+                    return value
                 }
             }
             null
@@ -417,7 +414,7 @@ private data class PendingWriteRequest(
 
 private data class PendingUpgradeRequest(
     val uidHex: String,
-    val originalVcard: String
+    val patchedVcard: String
 )
 
 private data class CounterEnableResult(
