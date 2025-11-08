@@ -18,9 +18,9 @@ import androidx.compose.ui.platform.LocalContext
 import com.corn.manageapp.NfcReadResult
 import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.utils.VCardVerifier
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
+import java.text.ParseException
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 /**
  * 人员管理（离线签名版）
@@ -607,10 +607,13 @@ private fun extractBirthDate(idNumber: String): String {
 }
 
 private fun parseDate(raw: String): String {
+    if (!raw.matches(Regex("\\d{8}"))) return ""
+    val parser = SimpleDateFormat("yyyyMMdd", Locale.CHINA).apply { isLenient = false }
+    val formatter = SimpleDateFormat("yyyy-MM-dd", Locale.CHINA)
     return try {
-        val parsed = LocalDate.parse(raw, DateTimeFormatter.ofPattern("yyyyMMdd"))
-        parsed.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-    } catch (_: DateTimeParseException) {
+        val date = parser.parse(raw)
+        if (date != null) formatter.format(date) else ""
+    } catch (_: ParseException) {
         ""
     }
 }
