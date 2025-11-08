@@ -59,10 +59,12 @@ class MainActivity : ComponentActivity() {
 
     /** ✅ 等待写卡的数据：name | phone | emailPrefix | enableCounter */
     private var pendingWriteRequest: PendingWriteRequest? = null
+    private var pendingUpgradeRequest: PendingUpgradeRequest? = null
 
     /** ✅ 写卡 / 读卡回调（通知 UI 状态） */
     private var onTagWriteCallback: ((NfcWriteResult) -> Unit)? = null
     private var onTagReadCallback: ((NfcReadResult) -> Unit)? = null
+    private var onUpgradeStatusCallback: ((NfcWriteResult) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,14 +110,18 @@ class MainActivity : ComponentActivity() {
                                 PeopleManagementScreen(
                                     modifier = Modifier.padding(inner),
                                     onWriteRequest = { name, phone, emailPrefix, enableCounter ->
-                                        // 由 UI 触发，开始等待用户贴卡
+                                        pendingUpgradeRequest = null
                                         pendingWriteRequest = PendingWriteRequest(name, phone, emailPrefix, enableCounter)
-                                        onTagWriteCallback?.invoke(
-                                            NfcWriteResult.Waiting
-                                        )
+                                        onTagWriteCallback?.invoke(NfcWriteResult.Waiting)
                                     },
                                     onWriteStatus = { cb -> onTagWriteCallback = cb },
-                                    onTagRead = { cb -> onTagReadCallback = cb }
+                                    onTagRead = { cb -> onTagReadCallback = cb },
+                                    onUpgradeRequest = { uidHex, originalVcard ->
+                                        pendingWriteRequest = null
+                                        pendingUpgradeRequest = PendingUpgradeRequest(uidHex, originalVcard)
+                                        onUpgradeStatusCallback?.invoke(NfcWriteResult.Waiting)
+                                    },
+                                    onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb }
                                 )
 
                             AppDestinations.INVENTORY ->
@@ -202,6 +208,23 @@ class MainActivity : ComponentActivity() {
 
             pendingWriteRequest = null
             onTagWriteCallback?.invoke(result)
+            return
+        }
+
+        pendingUpgradeRequest?.let { request ->
+            val tagObj = tag
+            val upgraded = VCardSigner.injectSignedNote(
+                context = this,
+                originalVcard = request.originalVcard,
+                uidHex = request.uidHex
+            )
+            val result = when {
+                tagObj == null -> NfcWriteResult.Failure("❌ 升级失败：未识别到 NFC 卡片")
+                upgraded == null -> NfcWriteResult.Failure("❌ 升级失败：请先在密钥管理中配置公私钥")
+                else -> writeNfcTag(tagObj, upgraded, request.uidHex, enableCounter = false)
+            }
+            pendingUpgradeRequest = null
+            onUpgradeStatusCallback?.invoke(result)
             return
         }
 
@@ -321,14 +344,25 @@ class MainActivity : ComponentActivity() {
     private fun readNtagCounter(tag: Tag?): Int? {
         tag ?: return null
         val nfcA = android.nfc.tech.NfcA.get(tag) ?: return null
+        val commands = listOf(
+            byteArrayOf(0x39.toByte(), 0x02),
+            byteArrayOf(0x39.toByte(), 0x00)
+        )
         return try {
             nfcA.connect()
-            val response = nfcA.transceive(byteArrayOf(0x39.toByte(), 0x00))
-            if (response.size >= 3) {
-                (response[0].toInt() and 0xFF shl 16) or
-                    (response[1].toInt() and 0xFF shl 8) or
-                    (response[2].toInt() and 0xFF)
-            } else null
+            for (command in commands) {
+                val response = try {
+                    nfcA.transceive(command)
+                } catch (_: Exception) {
+                    null
+                }
+                if (response != null && response.size >= 3) {
+                    return (response[0].toInt() and 0xFF shl 16) or
+                        (response[1].toInt() and 0xFF shl 8) or
+                        (response[2].toInt() and 0xFF)
+                }
+            }
+            null
         } catch (_: Exception) {
             null
         } finally {
@@ -377,6 +411,11 @@ private data class PendingWriteRequest(
     val phone: String,
     val emailPrefix: String,
     val enableCounter: Boolean
+)
+
+private data class PendingUpgradeRequest(
+    val uidHex: String,
+    val originalVcard: String
 )
 
 private data class CounterEnableResult(

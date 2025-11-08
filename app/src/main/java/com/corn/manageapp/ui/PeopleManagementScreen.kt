@@ -33,7 +33,9 @@ fun PeopleManagementScreen(
     modifier: Modifier = Modifier,
     onWriteRequest: (String, String, String, Boolean) -> Unit,
     onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
-    onTagRead: ((NfcReadResult) -> Unit) -> Unit
+    onTagRead: ((NfcReadResult) -> Unit) -> Unit,
+    onUpgradeRequest: (String, String) -> Unit,
+    onUpgradeStatus: ((NfcWriteResult) -> Unit) -> Unit
 ) {
     val ctx = LocalContext.current
 
@@ -54,6 +56,8 @@ fun PeopleManagementScreen(
     var parsedLines by remember { mutableStateOf<List<String>>(emptyList()) }
     var lastCounter by remember { mutableStateOf<Int?>(null) }
     var writeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
+    var lastVcard by remember { mutableStateOf("") }
+    var upgradeStatus by remember { mutableStateOf<NfcWriteResult?>(null) }
 
     // 人员管理
     val people = remember { mutableStateListOf<Person>() }
@@ -64,6 +68,9 @@ fun PeopleManagementScreen(
     LaunchedEffect(Unit) {
         onWriteStatus { status ->
             writeStatus = status
+        }
+        onUpgradeStatus { status ->
+            upgradeStatus = status
         }
         onTagRead { res ->
             lastUid = res.uidHex
@@ -80,21 +87,25 @@ fun PeopleManagementScreen(
             } else false
             parsedLines = parseVCard(res.vcard)
             lastCounter = res.nfcCounter
+            lastVcard = res.vcard
+            upgradeStatus = null
             selectedTab = 1 // 自动切到“读取”
         }
     }
 
     LaunchedEffect(writeStatus) {
-        if (writeStatus != null) {
+        if (writeStatus != null && selectedTab != 0) {
             selectedTab = 0
         }
     }
 
-    val containerScroll = rememberScrollState()
+    val writeScrollState = rememberScrollState()
+    val readScrollState = rememberScrollState()
+    val peopleScrollState = rememberScrollState()
+
     Column(
         modifier = modifier
             .fillMaxSize()
-            .verticalScroll(containerScroll)
             .padding(16.dp)
     ) {
         Text("人员管理", style = MaterialTheme.typography.titleLarge)
@@ -111,12 +122,18 @@ fun PeopleManagementScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        when (selectedTab) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f, fill = true)
+        ) {
+            when (selectedTab) {
                 // 写入
                 0 -> {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxSize()
+                            .verticalScroll(writeScrollState)
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -221,7 +238,8 @@ fun PeopleManagementScreen(
                 1 -> {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxSize()
+                            .verticalScroll(readScrollState)
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
@@ -260,6 +278,50 @@ fun PeopleManagementScreen(
                         } else {
                             Text("请贴卡读取信息", style = MaterialTheme.typography.bodySmall)
                         }
+
+                        Spacer(Modifier.height(16.dp))
+
+                        val canUpgrade = lastUid.isNotEmpty() && lastVcard.isNotEmpty()
+                        Button(
+                            onClick = { if (canUpgrade) onUpgradeRequest(lastUid, lastVcard) },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = canUpgrade && upgradeStatus !is NfcWriteResult.Waiting
+                        ) {
+                            Text("一键升级到新版本门卡")
+                        }
+
+                        when (val status = upgradeStatus) {
+                            NfcWriteResult.Waiting -> {
+                                Text(
+                                    "请再次贴卡完成升级…",
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            is NfcWriteResult.Success -> {
+                                Text(
+                                    buildString {
+                                        append("✅ 升级完成 (UID: ")
+                                        append(status.uidHex)
+                                        append(")")
+                                        if (lastDoorNum.isNotEmpty()) {
+                                            append(" 门禁号：")
+                                            append(lastDoorNum)
+                                        }
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            is NfcWriteResult.Failure -> {
+                                Text(
+                                    status.reason,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                            }
+                            null -> {}
+                        }
                     }
                 }
 
@@ -279,7 +341,8 @@ fun PeopleManagementScreen(
                     } else {
                         Column(
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .fillMaxSize()
+                                .verticalScroll(peopleScrollState)
                                 .padding(12.dp)
                         ) {
                             Text("人员列表", style = MaterialTheme.typography.titleMedium)
@@ -322,7 +385,7 @@ fun PeopleManagementScreen(
                 3 -> {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
+                            .fillMaxSize()
                             .padding(12.dp),
                         contentAlignment = Alignment.Center
                     ) {
@@ -330,6 +393,7 @@ fun PeopleManagementScreen(
                     }
                 }
             }
+        }
     }
 
     detailPerson?.let { person ->
