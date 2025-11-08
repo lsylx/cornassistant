@@ -292,29 +292,22 @@ class MainActivity : ComponentActivity() {
         return try {
             ultralight.connect()
             val raw = ultralight.readPages(configPage)
-
-            val pageConfig = raw.copyOfRange(0, 4)
-            val pageAccess = raw.copyOfRange(4, 8)
-
-            // Byte0：NC_REG；Bit0 置位后可允许计数器在 RF 接口下使用
-            val ncReg = pageConfig[0].toInt() and 0xFF
-            val updatedNcReg = ncReg or 0x01
-            if (updatedNcReg != ncReg) {
-                pageConfig[0] = updatedNcReg.toByte()
-                ultralight.writePage(configPage, pageConfig)
+            if (raw.size < 8) {
+                return CounterEnableResult(tagType, false)
             }
 
-            // Byte7（即 ACCESS 字节）Bit5：NFC counter enable
-            val access = pageAccess[3].toInt() and 0xFF
-            val counterEnabled = (access and 0x20) != 0
-            val updatedAccess = access or 0x20
-            if (!counterEnabled) {
-                pageAccess[3] = updatedAccess.toByte()
-                ultralight.writePage(configPage + 1, pageAccess)
+            val accessConfig = raw.copyOfRange(4, 8)
+
+            // ACCESS 字节位于配置页 + 1 的 Byte0；Bit4 控制 NFC 计数器使能
+            val accessByte = accessConfig[0].toInt() and 0xFF
+            val alreadyEnabled = (accessByte and 0x10) != 0
+            if (!alreadyEnabled) {
+                accessConfig[0] = (accessByte or 0x10).toByte()
+                ultralight.writePage(configPage + 1, accessConfig)
             }
 
-            val finalAccess = if (counterEnabled) access else updatedAccess
-            CounterEnableResult(tagType, (finalAccess and 0x20) != 0)
+            val finalAccess = if (alreadyEnabled) accessByte else (accessByte or 0x10)
+            CounterEnableResult(tagType, (finalAccess and 0x10) != 0)
         } catch (_: Exception) {
             CounterEnableResult(tagType, false)
         } finally {
