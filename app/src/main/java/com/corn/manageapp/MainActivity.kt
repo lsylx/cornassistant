@@ -42,9 +42,11 @@ import com.corn.manageapp.ui.theme.MyApplicationTheme
 import com.corn.manageapp.ui.*
 import com.corn.manageapp.data.*
 import com.corn.manageapp.network.HardwareItem
+import com.corn.manageapp.utils.SignedVCardPayload
 import com.corn.manageapp.utils.VCardSigner
 
 import java.util.Locale
+import kotlin.text.Charsets
 
 enum class AppDestinations(val label: String, val icon: ImageVector) {
     HOME("首页", Icons.Filled.Home),
@@ -123,9 +125,9 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onWriteStatus = { cb -> onTagWriteCallback = cb },
                                     onTagRead = { cb -> onTagReadCallback = cb },
-                                    onUpgradeRequest = { uidHex, upgradedVcard ->
+                                    onUpgradeRequest = { uidHex, upgradedPayload ->
                                         pendingWriteRequest = null
-                                        pendingUpgradeRequest = PendingUpgradeRequest(uidHex, upgradedVcard)
+                                        pendingUpgradeRequest = PendingUpgradeRequest(uidHex, upgradedPayload)
                                         onUpgradeStatusCallback?.invoke(NfcWriteResult.Waiting)
                                     },
                                     onUpgradeStatus = { cb -> onUpgradeStatusCallback = cb }
@@ -200,7 +202,7 @@ class MainActivity : ComponentActivity() {
         pendingWriteRequest?.let { request ->
             val (name, phone, emailPrefix, enableCounter) = request
             val tagObj = tag
-            val vcard = VCardSigner.buildSignedVCard(
+            val payload = VCardSigner.buildSignedVCard(
                 context = this,
                 fullName = name,
                 tel = phone,
@@ -210,8 +212,8 @@ class MainActivity : ComponentActivity() {
 
             val result = when {
                 tagObj == null -> NfcWriteResult.Failure("❌ 写入失败：未识别到 NFC 卡片")
-                vcard == null -> NfcWriteResult.Failure("❌ 写入失败：请先在密钥管理中配置公私钥")
-                else -> writeNfcTag(tagObj, vcard, uidHex, enableCounter)
+                payload == null -> NfcWriteResult.Failure("❌ 写入失败：请先在密钥管理中配置公私钥")
+                else -> writeNfcTag(tagObj, payload, uidHex, enableCounter)
             }
 
             pendingWriteRequest = null
@@ -221,10 +223,10 @@ class MainActivity : ComponentActivity() {
 
         pendingUpgradeRequest?.let { request ->
             val tagObj = tag
-            val patched = request.patchedVcard
+            val patched = request.patchedPayload
             val result = when {
                 tagObj == null -> NfcWriteResult.Failure("❌ 升级失败：未识别到 NFC 卡片")
-                patched.isBlank() -> NfcWriteResult.Failure("❌ 升级失败：无效的 vCard 数据")
+                patched.vcard.isBlank() -> NfcWriteResult.Failure("❌ 升级失败：无效的 vCard 数据")
                 else -> writeNfcTag(tagObj, patched, request.uidHex, enableCounter = false)
             }
             pendingUpgradeRequest = null
@@ -235,6 +237,7 @@ class MainActivity : ComponentActivity() {
         // ✅ 读卡：读取全部 NDEF 文本，回传给 UI（携带 UID）
         var readVcard = ""
         var counter: Int? = null
+        var readNote: String? = null
         tag?.let { t ->
             val ndef = Ndef.get(t)
             if (ndef != null) {
@@ -242,11 +245,29 @@ class MainActivity : ComponentActivity() {
                     ndef.connect()
                     val msg = ndef.ndefMessage
                     ndef.close()
-                    val sb = StringBuilder()
+                    var extractedVcard: String? = null
+                    val fallback = StringBuilder()
                     msg?.records?.forEach { rec ->
-                        sb.append(rec.toDecodedText())
+                        when {
+                            rec.isVCardRecord() -> {
+                                extractedVcard = runCatching {
+                                    String(rec.payload, Charsets.UTF_8)
+                                }.getOrNull() ?: extractedVcard
+                            }
+                            rec.tnf == NdefRecord.TNF_WELL_KNOWN && rec.type.contentEquals(NdefRecord.RTD_TEXT) -> {
+                                val text = rec.toDecodedText()
+                                if (text.contains("UID=") && text.contains("SIG=")) {
+                                    readNote = text
+                                } else {
+                                    fallback.append(text)
+                                }
+                            }
+                            else -> {
+                                fallback.append(rec.toDecodedText())
+                            }
+                        }
                     }
-                    readVcard = sb.toString()
+                    readVcard = extractedVcard ?: fallback.toString()
                     counter = readNtagCounter(tag)
                 } catch (_: Exception) {
                     // ignore
@@ -258,18 +279,24 @@ class MainActivity : ComponentActivity() {
             NfcReadResult(
                 uidHex = uidHex,
                 vcard = readVcard,
+                note = readNote,
                 nfcCounter = counter,
                 tagType = detectedTagType
             )
         )
     }
 
-    private fun writeNfcTag(tag: Tag, data: String, uidHex: String, enableCounter: Boolean): NfcWriteResult {
+    private fun writeNfcTag(tag: Tag, payload: SignedVCardPayload, uidHex: String, enableCounter: Boolean): NfcWriteResult {
         return try {
             val ndef = Ndef.get(tag)
-            val msg = NdefMessage(
-                arrayOf(NdefRecord.createTextRecord(Locale.CHINA.language, data))
+            val vcardRecord = NdefRecord(
+                NdefRecord.TNF_MIME_MEDIA,
+                "text/x-vcard".toByteArray(Charsets.US_ASCII),
+                ByteArray(0),
+                payload.vcard.toByteArray(Charsets.UTF_8)
             )
+            val noteRecord = NdefRecord.createTextRecord(Locale.CHINA.language, payload.note)
+            val msg = NdefMessage(arrayOf(vcardRecord, noteRecord))
             val counterResult = if (enableCounter) ensureNtagCounterEnabled(tag) else null
             if (ndef != null) {
                 ndef.connect()
@@ -403,10 +430,18 @@ private fun NdefRecord.toDecodedText(): String {
     }
 }
 
+private fun NdefRecord.isVCardRecord(): Boolean {
+    if (tnf != NdefRecord.TNF_MIME_MEDIA) return false
+    val typeString = runCatching { String(type, Charsets.US_ASCII) }.getOrNull() ?: return false
+    return typeString.equals("text/x-vcard", ignoreCase = true) ||
+        typeString.equals("text/vcard", ignoreCase = true)
+}
+
 /** ✅ 读取回调数据模型：UID + vCard 原文 */
 data class NfcReadResult(
     val uidHex: String,
     val vcard: String,
+    val note: String?,
     val nfcCounter: Int?,
     val tagType: String?
 )
@@ -443,7 +478,7 @@ private data class PendingWriteRequest(
 
 private data class PendingUpgradeRequest(
     val uidHex: String,
-    val patchedVcard: String
+    val patchedPayload: SignedVCardPayload
 )
 
 private data class CounterEnableResult(
