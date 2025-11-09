@@ -1,15 +1,24 @@
 package com.corn.manageapp.ui
 
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.corn.manageapp.network.HardwareItem
 import com.google.gson.JsonArray
@@ -21,86 +30,126 @@ fun DeviceDetailScreen(
     item: HardwareItem,
     onBack: () -> Unit
 ) {
-    // ✅ 整页可滑动，适配超小屏 240×320
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp)
+    var selectedTab by rememberSaveable { mutableStateOf(0) }
+    val scrollState = rememberScrollState()
+    val tabTitles = remember { listOf("基本信息", "网络", "电源状态", "硬件", "系统", "其它") }
+
+    LaunchedEffect(selectedTab) {
+        scrollState.scrollTo(0)
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize()
     ) {
-
-        item {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             TextButton(onClick = onBack) { Text("← 返回") }
-            Text("设备详情", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = item.nbtag?.takeIf { it.isNotBlank() } ?: "内部标签未知",
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
 
-        // ✅ 统一封装每一段 Section + 内容
-        item {
-            SectionTitle("基本信息")
-            Info("内部标签", item.nbtag)
-            Info("物理标签", item.wltag)
-            Info("型号", item.typename)
-            Info("电源", item.power)
-            Info("上架时间", item.time)
-            Info("类型", item.stype)
-            Info("服务器ID", item.serverid)
-            Info("机房", item.house_name)
-            Info("机柜", item.cname)
+        ScrollableTabRow(
+            selectedTabIndex = selectedTab,
+            edgePadding = 12.dp
+        ) {
+            tabTitles.forEachIndexed { index, title ->
+                Tab(
+                    selected = selectedTab == index,
+                    onClick = { selectedTab = index },
+                    text = { Text(title) }
+                )
+            }
         }
 
-        item {
-            SectionTitle("网络信息")
-            Info("主IP", item.zhuip)
-            Info("子网掩码", item.subnetmask)
-            Info("网关", item.gateway)
-            Info("VLAN", item.vlan)
-            Info("VLAN ID", item.vlanid)
-            Info("交换机端口", combineSwitch(item.switch_id, item.switch_num_name, item.switch_num))
-            Info("上行带宽", item.in_bw)
-            Info("下行带宽", item.out_bw)
-            Info("MAC", item.mac)
-            Info("端口MAC", jsonArrayToInline(item.port_mac))
-            Info("IP 列表", normalizeIpList(item.ip))
-        }
+        Divider()
 
-        item {
-            SectionTitle("IPMI / 电源")
-            Info("IPMI 支持", item.ipmi_support)
-            Info("IPMI IP", item.ipmi_ip)
-            Info("IPMI 用户名", item.ipmi_name)
-            Info("IPMI 密码", item.ipmi_pass)
-            Info("电源信息", item.power_msg)
-        }
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(scrollState)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            when (selectedTab) {
+                0 -> {
+                    SectionTitle("基本信息")
+                    Info("物理标签", item.wltag)
+                    Info("型号", item.typename)
+                    Info("电源", item.power)
+                    Info("上架时间", item.time)
+                    Info("类型", item.stype)
+                    Info("服务器ID", item.serverid)
+                    Info("机房", item.house_name)
+                    Info("机柜", item.cname)
+                }
 
-        item {
-            SectionTitle("硬件")
-            Info("CPU", normalizeCpu(item.cpu))
-            Info("内存", normalizeNameNumArray(item.ram))
-            Info("硬盘", normalizeNameNumArray(item.disk))
-            Info("PCI", normalizeNameNumArray(item.pci))
-            Info("硬盘数量", item.disk_num)
-            Info("硬盘容量", jsonArrayToInline(item.disk_size))
-        }
+                1 -> {
+                    SectionTitle("网络信息")
+                    Info("主IP", item.zhuip)
+                    Info("子网掩码", item.subnetmask)
+                    Info("网关", item.gateway)
+                    Info("VLAN", item.vlan)
+                    Info("VLAN ID", item.vlanid)
+                    Info("交换机端口", combineSwitch(item.switch_id, item.switch_num_name, item.switch_num))
+                    Info("上行带宽", item.in_bw)
+                    Info("下行带宽", item.out_bw)
+                    Info("MAC", item.mac)
+                    Info("端口MAC", jsonArrayToInline(item.port_mac))
+                    Info("IP 列表", normalizeIpList(item.ip))
+                }
 
-        item {
-            SectionTitle("系统")
-            Info("OS 名称", item.osname)
-            Info("OS ID", item.os_id)
-            Info("OS 组", item.os_group_id)
-            Info("系统账号", item.osusername)
-            Info("系统密码", item.ospassword)
-            Info("默认用户", item.default_user)
-            Info("破解用户", item.crack_user)
-        }
+                2 -> {
+                    SectionTitle("电源 / 状态")
+                    Info("IPMI 支持", item.ipmi_support)
+                    Info("IPMI IP", item.ipmi_ip)
+                    Info("IPMI 用户名", item.ipmi_name)
+                    Info("IPMI 密码", item.ipmi_pass)
+                    Info("电源信息", item.power_msg)
+                }
 
-        item {
-            SectionTitle("其它")
-            Info("锁定", item.lock)
-            Info("平均流量", item.average_flow)
-            Info("机柜ID", item.cid)
-            Info("机房ID", item.house)
-            Info("合计", item.sum)
-            Spacer(Modifier.height(20.dp))
+                3 -> {
+                    SectionTitle("硬件")
+                    Info("CPU", normalizeCpu(item.cpu))
+                    Info("内存", normalizeNameNumArray(item.ram))
+                    Info("硬盘", normalizeNameNumArray(item.disk))
+                    Info("PCI", normalizeNameNumArray(item.pci))
+                    Info("硬盘数量", item.disk_num)
+                    Info("硬盘容量", jsonArrayToInline(item.disk_size))
+                }
+
+                4 -> {
+                    SectionTitle("系统")
+                    Info("OS 名称", item.osname)
+                    Info("OS ID", item.os_id)
+                    Info("OS 组", item.os_group_id)
+                    Info("系统账号", item.osusername)
+                    Info("系统密码", item.ospassword)
+                    Info("默认用户", item.default_user)
+                    Info("破解用户", item.crack_user)
+                }
+
+                else -> {
+                    SectionTitle("其它")
+                    Info("锁定", item.lock)
+                    Info("平均流量", item.average_flow)
+                    Info("机柜ID", item.cid)
+                    Info("机房ID", item.house)
+                    Info("合计", item.sum)
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
         }
     }
 }

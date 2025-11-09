@@ -12,10 +12,15 @@ import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.nfc.tech.IsoDep
+import android.nfc.tech.MifareClassic
 import android.nfc.tech.MifareUltralight
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.nfc.tech.NfcA
+import android.nfc.tech.NfcB
+import android.nfc.tech.NfcF
+import android.nfc.tech.NfcV
 import android.os.Bundle
 
 import androidx.activity.ComponentActivity
@@ -189,6 +194,7 @@ class MainActivity : ComponentActivity() {
 
         // ✅ 统一取 UID（HEX 大写）
         val uidHex = tag?.id?.joinToString("") { "%02X".format(it) } ?: ""
+        val detectedTagType = detectTagType(tag)
 
         // ✅ 写卡：如果有待写入信息，则对 UID 做 Ed25519 签名并生成 vCard 写入
         pendingWriteRequest?.let { request ->
@@ -227,6 +233,8 @@ class MainActivity : ComponentActivity() {
         }
 
         // ✅ 读卡：读取全部 NDEF 文本，回传给 UI（携带 UID）
+        var readVcard = ""
+        var counter: Int? = null
         tag?.let { t ->
             val ndef = Ndef.get(t)
             if (ndef != null) {
@@ -238,19 +246,22 @@ class MainActivity : ComponentActivity() {
                     msg?.records?.forEach { rec ->
                         sb.append(rec.toDecodedText())
                     }
-                    val counter = readNtagCounter(tag)
-                    onTagReadCallback?.invoke(
-                        NfcReadResult(
-                            uidHex = uidHex,
-                            vcard = sb.toString(),
-                            nfcCounter = counter
-                        )
-                    )
+                    readVcard = sb.toString()
+                    counter = readNtagCounter(tag)
                 } catch (_: Exception) {
                     // ignore
                 }
             }
         }
+
+        onTagReadCallback?.invoke(
+            NfcReadResult(
+                uidHex = uidHex,
+                vcard = readVcard,
+                nfcCounter = counter,
+                tagType = detectedTagType
+            )
+        )
     }
 
     private fun writeNfcTag(tag: Tag, data: String, uidHex: String, enableCounter: Boolean): NfcWriteResult {
@@ -396,8 +407,26 @@ private fun NdefRecord.toDecodedText(): String {
 data class NfcReadResult(
     val uidHex: String,
     val vcard: String,
-    val nfcCounter: Int?
+    val nfcCounter: Int?,
+    val tagType: String?
 )
+
+private fun detectTagType(tag: Tag?): String? {
+    tag ?: return null
+    val techs = tag.techList?.toList().orEmpty()
+    if (techs.isEmpty()) return null
+    fun has(suffix: String) = techs.any { it.endsWith(suffix) }
+    return when {
+        has("MifareClassic") -> "Mifare Classic"
+        has("MifareUltralight") -> "NTAG"
+        has("IsoDep") -> "DESFire / CPU卡"
+        has("NfcV") -> "NFC-V"
+        has("NfcF") -> "FeliCa"
+        has("NfcB") -> "NFC-B"
+        has("NfcA") -> "NFC-A"
+        else -> techs.joinToString("，") { it.substringAfterLast('.') }
+    }
+}
 
 sealed class NfcWriteResult {
     data object Waiting : NfcWriteResult()
@@ -473,6 +502,6 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
             .verticalScroll(scrollState),
         contentAlignment = Alignment.Center
     ) {
-        Text("Welcome to $name!", style = MaterialTheme.typography.titleLarge)
+        Text("欢迎使用裕米小助手", style = MaterialTheme.typography.titleLarge)
     }
 }
