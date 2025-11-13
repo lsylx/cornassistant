@@ -3,6 +3,11 @@ package com.corn.manageapp.utils
 import android.content.Context
 import android.util.Base64
 
+data class SignedVCardPayload(
+    val vcard: String,
+    val note: String
+)
+
 object VCardSigner {
     /**
      * NOTE 格式:
@@ -17,19 +22,19 @@ object VCardSigner {
         tel: String,
         email: String,
         uidHex: String
-    ): String? {
+    ): SignedVCardPayload? {
         val note = buildSignedNote(context, uidHex) ?: return null
 
-        return buildString {
+        val vcard = buildString {
             appendLine("BEGIN:VCARD")
             appendLine("VERSION:3.0")
             appendLine("FN:$fullName")
             appendLine("ORG:COMCORN")
             appendLine("EMAIL:$email")
             appendLine("TEL:$tel")
-            appendLine("NOTE:$note")
             appendLine("END:VCARD")
         }
+        return SignedVCardPayload(vcard, note)
     }
 
     fun buildSignedNote(context: Context, uidHex: String): String? {
@@ -40,59 +45,21 @@ object VCardSigner {
         return "UID=$uidHex;SIG=$sigB64;ALG=ED25519;VER=1"
     }
 
-    fun injectSignedNote(context: Context, originalVcard: String, uidHex: String): String? {
+    fun injectSignedNote(context: Context, originalVcard: String, uidHex: String): SignedVCardPayload? {
         val note = buildSignedNote(context, uidHex) ?: return null
-        val newline = if (originalVcard.contains("\r\n")) "\r\n" else "\n"
-        val normalized = originalVcard.replace("\r\n", "\n")
-        val lines = normalized.split('\n')
-        if (lines.isEmpty()) return "NOTE:$note"
+        val cleaned = stripNoteLines(originalVcard)
+        val finalVcard = if (cleaned.isBlank()) originalVcard else cleaned
+        return SignedVCardPayload(finalVcard, note)
+    }
 
-        val rebuilt = mutableListOf<String>()
-        var noteInserted = false
-        var endInserted = false
-
-        for (line in lines) {
-            when {
-                line.isEmpty() && rebuilt.isEmpty() -> {
-                    // Preserve leading empties if any
-                    rebuilt.add(line)
-                }
-                line.equals("END:VCARD", ignoreCase = true) -> {
-                    if (!noteInserted) {
-                        rebuilt.add("NOTE:$note")
-                        noteInserted = true
-                    }
-                    rebuilt.add(line)
-                    endInserted = true
-                }
-                line.startsWith("NOTE:", ignoreCase = true) -> {
-                    if (!noteInserted) {
-                        rebuilt.add("NOTE:$note")
-                        noteInserted = true
-                    }
-                    // Skip original NOTE lines
-                }
-                else -> rebuilt.add(line)
-            }
-        }
-
-        if (!noteInserted) {
-            if (endInserted) {
-                val endIndex = rebuilt.indexOfLast { it.equals("END:VCARD", ignoreCase = true) }
-                if (endIndex >= 0) {
-                    rebuilt.add(endIndex, "NOTE:$note")
-                    noteInserted = true
-                }
-            }
-        }
-
-        if (!noteInserted) {
-            rebuilt.add("NOTE:$note")
-        }
-
-        val result = rebuilt.joinToString(newline)
-        val needsTrailingNewline = originalVcard.endsWith("\n") || originalVcard.endsWith("\r\n")
-        return if (needsTrailingNewline) result + newline else result
+    private fun stripNoteLines(original: String): String {
+        if (original.isBlank()) return original
+        val newline = if (original.contains("\r\n")) "\r\n" else "\n"
+        val normalized = original.replace("\r\n", "\n")
+        val filtered = normalized.split('\n').filterNot { it.startsWith("NOTE:", ignoreCase = true) }
+        val rebuilt = filtered.joinToString("\n")
+        val needsTrailingNewline = original.endsWith("\n") || original.endsWith("\r\n")
+        return if (needsTrailingNewline) rebuilt + newline else rebuilt
     }
 
     private fun hexToByteArray(s: String): ByteArray {

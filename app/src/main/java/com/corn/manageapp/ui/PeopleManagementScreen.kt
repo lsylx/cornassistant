@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.corn.manageapp.NfcReadResult
@@ -37,6 +38,7 @@ import com.corn.manageapp.NfcWriteResult
 import com.corn.manageapp.data.PeopleRepository
 import com.corn.manageapp.data.Person
 import com.corn.manageapp.util.AvatarStorage
+import com.corn.manageapp.utils.SignedVCardPayload
 import com.corn.manageapp.utils.VCardSigner
 import com.corn.manageapp.utils.VCardVerifier
 import kotlinx.coroutines.launch
@@ -59,7 +61,7 @@ fun PeopleManagementScreen(
     onWriteRequest: (String, String, String, Boolean) -> Unit,
     onWriteStatus: ((NfcWriteResult) -> Unit) -> Unit,
     onTagRead: ((NfcReadResult) -> Unit) -> Unit,
-    onUpgradeRequest: (String, String) -> Unit,
+    onUpgradeRequest: (String, SignedVCardPayload) -> Unit,
     onUpgradeStatus: ((NfcWriteResult) -> Unit) -> Unit
 ) {
     val ctx = LocalContext.current
@@ -94,6 +96,7 @@ fun PeopleManagementScreen(
     var matchedPerson by remember { mutableStateOf<Person?>(null) }
     var hasReadCard by remember { mutableStateOf(false) }
     val currentPeople by rememberUpdatedState(people)
+    var addingFromCard by remember { mutableStateOf(false) }
 
     // 注册 NFC 读取回调（组件进入时）
     LaunchedEffect(Unit) {
@@ -110,16 +113,17 @@ fun PeopleManagementScreen(
             lastTagType = res.tagType?.takeIf { it.isNotBlank() } ?: "未知卡片"
 
             val hasVcard = res.vcard.isNotBlank()
+            val noteFromRecord = res.note?.takeIf { it.isNotBlank() }
             if (hasVcard) {
                 // 从 vCard 找 NOTE 行
                 val noteLine = res.vcard.lines().firstOrNull { it.startsWith("NOTE:", ignoreCase = true) }
                     ?.substringAfter("NOTE:", "")
                     ?.trim()
                     ?: ""
-                val noteExists = noteLine.isNotEmpty()
-                hasNoteSignature = noteExists
-                verifyOk = if (noteExists) {
-                    VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteLine)
+                val noteValue = noteFromRecord ?: noteLine
+                hasNoteSignature = noteValue.isNotEmpty()
+                verifyOk = if (noteValue.isNotEmpty()) {
+                    VCardVerifier.verifyNoteWithStoredPublic(ctx, res.uidHex, noteValue)
                 } else false
                 parsedLines = parseVCard(res.vcard)
                 matchedPerson = findMatchingPerson(res.vcard, currentPeople)
@@ -243,7 +247,7 @@ fun PeopleManagementScreen(
                 SubPageContainer(scrollState = writeScrollState, onBack = {
                     currentPage = PeoplePage.MENU
                 }) {
-                    Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
+                    Text("写入卡片（含 UID 的签名）", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
@@ -272,7 +276,7 @@ fun PeopleManagementScreen(
                     ) {
                         Checkbox(checked = enableCounter, onCheckedChange = { enableCounter = it })
                         Spacer(Modifier.width(4.dp))
-                        Text("写卡时开启 NFC 计数器", style = MaterialTheme.typography.bodyMedium)
+                        Text("开启 NFC 计数器", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     Button(
@@ -286,18 +290,20 @@ fun PeopleManagementScreen(
                         modifier = Modifier.fillMaxWidth(),
                         enabled = writeStatus !is NfcWriteResult.Waiting
                     ) {
-                        Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
+                        Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入卡片")
                     }
 
                     val preview = buildString {
+                        appendLine("Record #1 vCard：")
                         appendLine("BEGIN:VCARD")
                         appendLine("VERSION:3.0")
                         appendLine("FN:${name.ifBlank { "张三" }}")
                         appendLine("ORG:COMCORN")
                         appendLine("EMAIL:${(emailPrefix.ifBlank { "john" })}@comcorn.cn")
                         appendLine("TEL:${phone.ifBlank { "13800000000" }}")
-                        appendLine("NOTE:(刷卡写入时生成 UID 签名)")
                         appendLine("END:VCARD")
+                        appendLine("Record #2 Text：")
+                        appendLine("(刷卡写入时生成 UID 签名)")
                     }
                     Text("预览", style = MaterialTheme.typography.titleSmall)
                     Surface(tonalElevation = 1.dp) {
@@ -342,7 +348,7 @@ fun PeopleManagementScreen(
                 SubPageContainer(scrollState = readScrollState, onBack = {
                     currentPage = PeoplePage.MENU
                 }) {
-                    Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
+                    Text("读取卡片", style = MaterialTheme.typography.titleMedium)
 
                     val displayTagType = if (hasReadCard) lastTagType.ifBlank { "未知卡片" } else null
                     val displayUid = if (hasReadCard) lastUid.ifBlank { "未识别" } else null
@@ -350,7 +356,7 @@ fun PeopleManagementScreen(
 
                     InfoLine("卡片类型", displayTagType)
                     InfoLine("卡片 UID", displayUid)
-                    InfoLine("门禁卡号（10位）", displayDoor)
+                    InfoLine("门禁卡号", displayDoor)
                     CounterInfo(lastCounter, hasReadCard)
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -376,7 +382,7 @@ fun PeopleManagementScreen(
                             verifyOk == false -> {
                                 Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
                                 Spacer(Modifier.width(4.dp))
-                                val msg = if (hasNoteSignature == false) "假（缺少 NOTE 签名）" else "假"
+                                val msg = if (hasNoteSignature == false) "旧版本，无法验证" else "假"
                                 Text(msg, color = MaterialTheme.colorScheme.error)
                             }
                             else -> Text("（请刷卡）")
@@ -392,6 +398,62 @@ fun PeopleManagementScreen(
                                 currentPage = PeoplePage.PEOPLE
                             }
                         )
+                    }
+
+                    if (hasReadCard && lastVcard.isNotBlank()) {
+                        val fields = parseVCardFields(lastVcard)
+                        val canAutoAdd = matchedPerson == null && !addingFromCard
+                        Button(
+                            onClick = {
+                                if (matchedPerson != null) {
+                                    Toast.makeText(ctx, "人员已存在", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                val nameValue = fields["FN"]?.trim().orEmpty()
+                                val phoneValue = fields["TEL"]?.trim().orEmpty()
+                                val emailValue = fields["EMAIL"]?.trim().orEmpty()
+                                if (nameValue.isBlank() && phoneValue.isBlank() && emailValue.isBlank()) {
+                                    Toast.makeText(ctx, "无法从卡片读取有效的人员信息", Toast.LENGTH_SHORT).show()
+                                    return@Button
+                                }
+                                val idNumberValue = fields["X-IDCARD"].orEmpty()
+                                    .ifBlank { fields["ID"]?.trim().orEmpty() }
+                                    .ifBlank { fields["IDNUMBER"]?.trim().orEmpty() }
+                                    .ifBlank { fields["X-ID"]?.trim().orEmpty() }
+                                val genderRaw = fields["GENDER"] ?: fields["X-GENDER"] ?: fields["SEX"]
+                                val genderValue = normalizeGender(genderRaw)
+                                val birthFromCard = normalizeBirthDate(fields["BDAY"])
+                                val birthDateValue = when {
+                                    birthFromCard.isNotEmpty() -> birthFromCard
+                                    idNumberValue.isNotBlank() -> extractBirthDate(idNumberValue)
+                                    else -> ""
+                                }
+                                val person = Person(
+                                    name = if (nameValue.isNotBlank()) nameValue else "未命名人员",
+                                    gender = genderValue,
+                                    idNumber = idNumberValue,
+                                    birthDate = birthDateValue,
+                                    phone = phoneValue,
+                                    email = emailValue,
+                                    avatarPath = null
+                                )
+                                addingFromCard = true
+                                coroutineScope.launch {
+                                    try {
+                                        peopleRepository.upsert(person)
+                                        Toast.makeText(ctx, "已添加到人员库", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        addingFromCard = false
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            enabled = canAutoAdd
+                        ) {
+                            Text(if (addingFromCard) "正在添加…" else "一键添加到人员库")
+                        }
                     }
 
                     if (parsedLines.isNotEmpty()) {
@@ -665,6 +727,28 @@ private fun parseVCard(vcard: String): List<String> {
         }
     }
     return out
+}
+
+private fun normalizeGender(raw: String?): String {
+    val value = raw?.trim().orEmpty()
+    if (value.isEmpty()) return "未知"
+    return when {
+        value.equals("男", ignoreCase = true) -> "男"
+        value.equals("女", ignoreCase = true) -> "女"
+        value.equals("male", ignoreCase = true) || value.equals("m", ignoreCase = true) -> "男"
+        value.equals("female", ignoreCase = true) || value.equals("f", ignoreCase = true) -> "女"
+        else -> value
+    }
+}
+
+private fun normalizeBirthDate(raw: String?): String {
+    val value = raw?.trim().orEmpty()
+    if (value.isEmpty()) return ""
+    return when {
+        value.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) -> value
+        value.matches(Regex("\\d{8}")) -> parseDate(value)
+        else -> ""
+    }
 }
 
 /**
