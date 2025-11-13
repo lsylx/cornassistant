@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.corn.manageapp.NfcReadResult
@@ -246,7 +247,7 @@ fun PeopleManagementScreen(
                 SubPageContainer(scrollState = writeScrollState, onBack = {
                     currentPage = PeoplePage.MENU
                 }) {
-                    Text("写入 vCard（NOTE 含 UID 的 Ed25519 签名）", style = MaterialTheme.typography.titleMedium)
+                    Text("写入卡片（含 UID 的签名）", style = MaterialTheme.typography.titleMedium)
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
@@ -275,7 +276,7 @@ fun PeopleManagementScreen(
                     ) {
                         Checkbox(checked = enableCounter, onCheckedChange = { enableCounter = it })
                         Spacer(Modifier.width(4.dp))
-                        Text("写卡时开启 NFC 计数器", style = MaterialTheme.typography.bodyMedium)
+                        Text("开启 NFC 计数器", style = MaterialTheme.typography.bodyMedium)
                     }
 
                     Button(
@@ -289,18 +290,20 @@ fun PeopleManagementScreen(
                         modifier = Modifier.fillMaxWidth(),
                         enabled = writeStatus !is NfcWriteResult.Waiting
                     ) {
-                        Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入 NFC")
+                        Text(if (writeStatus is NfcWriteResult.Waiting) "请贴卡" else "写入卡片")
                     }
 
                     val preview = buildString {
+                        appendLine("Record #1 vCard：")
                         appendLine("BEGIN:VCARD")
                         appendLine("VERSION:3.0")
                         appendLine("FN:${name.ifBlank { "张三" }}")
                         appendLine("ORG:COMCORN")
                         appendLine("EMAIL:${(emailPrefix.ifBlank { "john" })}@comcorn.cn")
                         appendLine("TEL:${phone.ifBlank { "13800000000" }}")
-                        appendLine("NOTE:(刷卡写入时生成 UID 签名)")
                         appendLine("END:VCARD")
+                        appendLine("Record #2 Text：")
+                        appendLine("(刷卡写入时生成 UID 签名)")
                     }
                     Text("预览", style = MaterialTheme.typography.titleSmall)
                     Surface(tonalElevation = 1.dp) {
@@ -345,7 +348,7 @@ fun PeopleManagementScreen(
                 SubPageContainer(scrollState = readScrollState, onBack = {
                     currentPage = PeoplePage.MENU
                 }) {
-                    Text("读取 vCard 并离线验证", style = MaterialTheme.typography.titleMedium)
+                    Text("读取卡片", style = MaterialTheme.typography.titleMedium)
 
                     val displayTagType = if (hasReadCard) lastTagType.ifBlank { "未知卡片" } else null
                     val displayUid = if (hasReadCard) lastUid.ifBlank { "未识别" } else null
@@ -353,7 +356,7 @@ fun PeopleManagementScreen(
 
                     InfoLine("卡片类型", displayTagType)
                     InfoLine("卡片 UID", displayUid)
-                    InfoLine("门禁卡号（10位）", displayDoor)
+                    InfoLine("门禁卡号", displayDoor)
                     CounterInfo(lastCounter, hasReadCard)
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -379,7 +382,7 @@ fun PeopleManagementScreen(
                             verifyOk == false -> {
                                 Icon(Icons.Filled.Close, contentDescription = "假", tint = MaterialTheme.colorScheme.error)
                                 Spacer(Modifier.width(4.dp))
-                                val msg = if (hasNoteSignature == false) "假（缺少 NOTE 签名）" else "假"
+                                val msg = if (hasNoteSignature == false) "旧版本，无法验证" else "假"
                                 Text(msg, color = MaterialTheme.colorScheme.error)
                             }
                             else -> Text("（请刷卡）")
